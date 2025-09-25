@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+SQLAlchemy==2.0.35
+pydantic==2.9.2
+# scraper stack (unchanged)
+httpx==0.27.2
+selectolax==0.3.21
+tenacity==9.0.0
+# SQL Server
+pyodbc==5.2.0
+# Load .env automatically
+python-dotenv==1.0.1

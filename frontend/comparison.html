@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8"/>
+  <title>Comparison</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="./styles.css"/>
+</head>
+<body>
+<header>
+  <h1>Comparison</h1>
+  <nav>
+    <a class="card" href="./matching.html">Matching</a>
+    <a class="card" href="./erp.html">ERP Import</a>
+    <span style="flex:1"></span>
+    <select id="siteSelect"></select>
+    <button id="refreshSites">↻ Sites</button>
+  </nav>
+</header>
+
+<main>
+  <div class="toolbar">
+    <button id="loadLatest">Load Latest (DB)</button>
+    <button id="scrapeNow">Scrape Now</button>
+    <input id="compareLimit" type="number" value="200" min="1" max="2000" />
+  </div>
+  <table id="compareTable">
+    <thead>
+    <tr>
+      <th>Praktis Code</th>
+      <th>Praktiker Code</th>
+      <th>Praktis Name</th>
+      <th>Praktiker Name</th>
+      <th>Praktis Regular Price</th>
+      <th>Praktiker Regular Price</th>
+      <th>Praktis Promo Price</th>
+      <th>Praktiker Promo Price</th>
+    </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</main>
+
+<script type="module" src="./comparison.js"></script>
+</body>
+</html>

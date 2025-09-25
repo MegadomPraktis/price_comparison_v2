@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8"/>
+  <title>ERP Import</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="./styles.css"/>
+</head>
+<body>
+<header>
+  <h1>ERP Import</h1>
+  <nav>
+    <a class="card" href="./matching.html">Matching</a>
+    <a class="card" href="./comparison.html">Comparison</a>
+  </nav>
+</header>
+
+<main>
+  <h3>Upload ERP XML</h3>
+  <form id="erpForm">
+    <input type="file" id="erpFile" accept=".xml"/>
+    <button type="submit">Upload</button>
+  </form>
+  <pre id="erpResult"></pre>
+</main>
+
+<script type="module">
+import { API } from "./shared.js";
+const erpForm = document.getElementById("erpForm");
+const erpFile = document.getElementById("erpFile");
+const erpResult = document.getElementById("erpResult");
+
+erpForm.onsubmit = async (e) => {
+  e.preventDefault();
+  const fd = new FormData();
+  if (erpFile.files[0]) fd.append("xml_file", erpFile.files[0]);
+  const r = await fetch(`${API}/api/erp/ingest_xml`, { method: "POST", body: fd });
+  if (!r.ok) {
+    const err = await r.text();
+    erpResult.textContent = "Upload failed:\n" + err;
+    return;
+  }
+  const data = await r.json();
+  erpResult.textContent = JSON.stringify(data, null, 2);
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8"/>
+  <title>Matching</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="./styles.css"/>
+</head>
+<body>
+<header>
+  <h1>Matching</h1>
+  <nav>
+    <a class="card" href="./comparison.html">Comparison</a>
+    <a class="card" href="./erp.html">ERP Import</a>
+    <span style="flex:1"></span>
+    <select id="siteSelect"></select>
+    <button id="refreshSites">↻ Sites</button>
+  </nav>
+</header>
+
+<main>
+  <div class="toolbar">
+    <input id="searchInput" placeholder="Search SKU/Name/Barcode..."/>
+    <button id="loadProducts">Load Products</button>
+    <button id="autoMatch">Auto-match by Barcode</button>
+  </div>
+
+  <table id="matchTable">
+    <thead>
+    <tr>
+      <th>Our SKU</th>
+      <th>Barcode</th>
+      <th>Name</th>
+      <th>Competitor SKU</th>
+      <th>Competitor Barcode</th>
+      <th>Save</th>
+    </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="pager">
+    <button id="prevPage">Prev</button>
+    <span id="pageInfo"></span>
+    <button id="nextPage">Next</button>
+  </div>
+</main>
+
+<script type="module" src="./matching.js"></script>
+</body>
+</html>
