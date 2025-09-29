@@ -22,13 +22,14 @@ class ProductIn(BaseModel):
     price_promo: Optional[float] = None
 
 class ProductOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
     sku: str
-    barcode: Optional[str]
+    barcode: Optional[str] = None
     name: str
-    price_regular: Optional[float]
-    price_promo: Optional[float]
+    price_regular: Optional[float] = None
+    price_promo: Optional[float] = None
+    class Config:
+        from_attributes = True
 
 class MatchCreate(BaseModel):
     product_id: int
@@ -37,15 +38,17 @@ class MatchCreate(BaseModel):
     competitor_barcode: Optional[str] = None
 
 class MatchOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
     product_id: int
-    site_code: str = Field(...)
-    competitor_sku: Optional[str]
-    competitor_barcode: Optional[str]
+    site_code: str
+    competitor_sku: Optional[str] = None
+    competitor_barcode: Optional[str] = None
     product_sku: str
-    product_barcode: Optional[str]
+    product_barcode: Optional[str] = None
     product_name: str
+    # NEW: enrich matching grid with link + name (when known)
+    competitor_name: Optional[str] = None
+    competitor_url: Optional[str] = None
 
 class ComparisonRowOut(BaseModel):
     product_sku: str

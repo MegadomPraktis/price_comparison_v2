@@ -61,10 +61,14 @@ async def _get(client: httpx.AsyncClient, url: str) -> str:
 
 class PraktikerScraper(BaseScraper):
     def __init__(self):
+        self.site_code = "praktiker"  # required by BaseScraper
         self._bucket = _TokenBucket(REQUESTS_PER_SECOND, BURST)
         self._sem = asyncio.Semaphore(CONCURRENCY)
 
     async def search_by_barcode(self, barcode: Optional[str]) -> Optional[SearchResult]:
+        """
+        Lightweight helper used by auto-match: given a barcode, try to find a card and derive the SKU.
+        """
         if not barcode: return None
         async with self._sem:
             await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
@@ -87,18 +91,47 @@ class PraktikerScraper(BaseScraper):
         name = name_el.text(strip=True) if name_el else None
         return SearchResult(competitor_sku=competitor_sku, competitor_barcode=None, url=url, name=name)
 
+    def _choose_query(self, match) -> tuple[str, str]:
+        """
+        Decide what to search with.
+        - If both SKU and barcode populated -> use SKU
+        - Else use whichever is populated
+        Empty strings are treated as missing.
+        Returns: (query_string, "sku"|"barcode")
+        """
+        sku = (match.competitor_sku or "").strip() or None
+        bar = (match.competitor_barcode or "").strip() or None
+        if sku:
+            return sku, "sku"
+        if bar:
+            return bar, "barcode"
+        return "", "none"
+
     async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
-        code = match.competitor_sku or match.competitor_barcode
-        if not code: return None
-        url = PRAKTIKER_SEARCH_URL.format(code)
+        """
+        Scrape using the chosen key (SKU preferred over barcode).
+        If searching by barcode, we try to DERIVE the Praktiker SKU from the /p/<digits> link.
+        """
+        query, used = self._choose_query(match)
+        if not query:
+            return None
+
+        search_url = PRAKTIKER_SEARCH_URL.format(query)
+
+        # Search page
         async with self._sem:
             await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
             await self._bucket.take()
             async with await _make_client() as client:
-                html = await _get(client, url)
+                html = await _get(client, search_url)
+
         tree = HTMLParser(html)
         grid = tree.css_first("div.products-grid")
-        name = None; price_bgn = None; pdp_url = None
+        name = None
+        price_bgn = None
+        pdp_url = None
+        derived_sku = None
+
         if grid:
             card = grid.css_first("te-product-box div.products-grid__item")
             if card:
@@ -110,6 +143,11 @@ class PraktikerScraper(BaseScraper):
                     href = a.attributes.get("href")
                     if href:
                         pdp_url = href if href.startswith("http") else "https://praktiker.bg" + href
+                        m_id = re.search(r"/p/(\d+)", href)
+                        if m_id:
+                            derived_sku = m_id.group(1)  # we ALWAYS try to derive a SKU from the link
+
+        # If price not visible on the grid, follow PDP
         if price_bgn is None and pdp_url:
             async with self._sem:
                 await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
@@ -121,10 +159,17 @@ class PraktikerScraper(BaseScraper):
                 h = t2.css_first("h1, h1.product-title, title")
                 name = h.text(strip=True) if h else None
             price_bgn, _ = parse_dual_price_block(t2)
+
+        # Decide final identifiers:
+        # - Prefer derived_sku when present (especially when we searched by barcode)
+        # - Keep original barcode if present on the match (Praktiker rarely shows EAN on page)
+        final_sku = (derived_sku or (match.competitor_sku or "").strip() or None)
+        final_bar = (match.competitor_barcode or "").strip() or None
+
         return CompetitorDetail(
-            competitor_sku=match.competitor_sku,
-            competitor_barcode=match.competitor_barcode,
-            url=pdp_url or url,
+            competitor_sku=final_sku,
+            competitor_barcode=final_bar,
+            url=pdp_url or search_url,
             name=name,
             regular_price=price_bgn,
             promo_price=None

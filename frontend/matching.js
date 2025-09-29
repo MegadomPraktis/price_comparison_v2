@@ -47,7 +47,6 @@ async function loadProducts() {
     }
   }
 
-  // 3) render rows with inputs **prefilled** if match exists (still editable)
   renderMatchRows(products, matchesByProductId);
   pageInfo.textContent = `Page ${page} (rows: ${products.length})`;
 }
@@ -56,20 +55,32 @@ function renderMatchRows(products, matchesByProductId) {
   tbodyMatch.innerHTML = "";
   for (const p of products) {
     const m = matchesByProductId[p.id] || null;
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${p.sku}</td>
       <td>${p.barcode ?? ""}</td>
       <td>${escapeHtml(p.name)}</td>
-      <td><input placeholder="competitor SKU" class="comp-sku" value="${m?.competitor_sku ?? ""}"/></td>
-      <td><input placeholder="competitor barcode" class="comp-bar" value="${m?.competitor_barcode ?? ""}"/></td>
+
       <td>
-        <button class="saveMatch">${m ? "Update" : "Save"}</button>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input placeholder="competitor SKU" class="comp-sku" value="${m?.competitor_sku ?? ""}" style="flex:1"/>
+          ${m?.competitor_url ? `<a class="link-btn" href="${m.competitor_url}" target="_blank" title="${escapeHtml(m?.competitor_name ?? 'Продукт')}">🔗</a>` : ""}
+        </div>
       </td>
+
+      <td>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input placeholder="competitor barcode" class="comp-bar" value="${m?.competitor_barcode ?? ""}" style="flex:1"/>
+          ${(!m?.competitor_url && m?.competitor_barcode) ? `<a class="link-btn" href="https://praktiker.bg/search/${encodeURIComponent(m.competitor_barcode)}" target="_blank" title="Search by barcode">🔍</a>` : ""}
+        </div>
+      </td>
+
+      <td><button class="saveMatch">${m ? "Update" : "Save"}</button></td>
     `;
 
-    // Optional: style prefilled cells so it's obvious they were auto-matched
-    if (m?.competitor_sku) tr.querySelector(".comp-sku").style.background = "rgba(59,130,246,.12)";
+    // Subtle prefill highlight
+    if (m?.competitor_sku)  tr.querySelector(".comp-sku").style.background  = "rgba(59,130,246,.12)";
     if (m?.competitor_barcode) tr.querySelector(".comp-bar").style.background = "rgba(59,130,246,.12)";
 
     tr.querySelector(".saveMatch").onclick = async () => {
@@ -91,14 +102,42 @@ function renderMatchRows(products, matchesByProductId) {
         alert("Save failed:\n" + err);
         return;
       }
-      // update button label + subtle feedback
       tr.querySelector(".saveMatch").textContent = "Update";
       tr.querySelector(".comp-sku").style.background = compSku ? "rgba(59,130,246,.12)" : "";
       tr.querySelector(".comp-bar").style.background = compBar ? "rgba(59,130,246,.12)" : "";
+      // Reload just this row's link if needed:
+      await reloadOneRowLink(p.id, tr);
       alert("Saved");
     };
 
     tbodyMatch.appendChild(tr);
+  }
+}
+
+async function reloadOneRowLink(productId, tr) {
+  // re-fetch matches/lookup for this single product to refresh the link (if a snapshot exists)
+  const r = await fetch(`${API}/api/matches/lookup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ site_code: siteSelect.value, product_ids: [productId] })
+  });
+  if (!r.ok) return;
+  const [m] = await r.json();
+  if (!m) return;
+
+  const skuCell = tr.querySelector(".comp-sku")?.parentElement;
+  if (skuCell && m.competitor_url) {
+    // add/update the 🔗 anchor
+    let a = skuCell.querySelector("a.link-btn");
+    if (!a) {
+      a = document.createElement("a");
+      a.className = "link-btn";
+      a.textContent = "🔗";
+      a.target = "_blank";
+      skuCell.appendChild(a);
+    }
+    a.href = m.competitor_url;
+    a.title = m.competitor_name || "Продукт";
   }
 }
 
@@ -116,7 +155,6 @@ autoMatchBtn.onclick = async () => {
   }
   const data = await r.json();
   alert(`Auto match -> attempted=${data.attempted}, found=${data.found}`);
-  // reload to show the prefilled matches
   await loadProducts();
 };
 

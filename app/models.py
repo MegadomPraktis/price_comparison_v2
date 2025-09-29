@@ -49,6 +49,7 @@ class PriceSnapshot(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     site_id: Mapped[int] = mapped_column(Integer, ForeignKey("competitor_sites.id"))
     competitor_sku: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    competitor_barcode: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)  # <-- NEW
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     promo_price: Mapped[float | None] = mapped_column(Float, nullable=True)
