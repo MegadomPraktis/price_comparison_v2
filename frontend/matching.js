@@ -1,9 +1,13 @@
-import { API, loadSitesInto, escapeHtml } from "./shared.js";
+import { API, loadSitesInto, loadTagsInto, escapeHtml, makeTagBadge } from "./shared.js";
 
 const siteSelect = document.getElementById("siteSelect");
 const refreshSitesBtn = document.getElementById("refreshSites");
 refreshSitesBtn.onclick = () => loadSitesInto(siteSelect);
 await loadSitesInto(siteSelect);
+
+// NEW: tag filter
+const tagFilter = document.getElementById("tagFilter");
+await loadTagsInto(tagFilter, true);
 
 // paging + search
 let page = 1;
@@ -21,6 +25,10 @@ async function loadProducts() {
   url.searchParams.set("page", String(page));
   url.searchParams.set("page_size", "50");
   if (q) url.searchParams.set("q", q);
+
+  // NEW: tag filter
+  const tagId = tagFilter.value.trim();
+  if (tagId) url.searchParams.set("tag_id", tagId);
 
   // 1) load products
   const r = await fetch(url);
@@ -47,14 +55,28 @@ async function loadProducts() {
     }
   }
 
-  renderMatchRows(products, matchesByProductId);
+  // 3) fetch tags per product (for badges)
+  let tagsByProductId = {};
+  if (productIds.length) {
+    const r3 = await fetch(`${API}/api/tags/by_products`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_ids: productIds })
+    });
+    if (r3.ok) {
+      tagsByProductId = await r3.json();
+    }
+  }
+
+  renderMatchRows(products, matchesByProductId, tagsByProductId);
   pageInfo.textContent = `Page ${page} (rows: ${products.length})`;
 }
 
-function renderMatchRows(products, matchesByProductId) {
+function renderMatchRows(products, matchesByProductId, tagsByProductId) {
   tbodyMatch.innerHTML = "";
   for (const p of products) {
     const m = matchesByProductId[p.id] || null;
+    const prodTags = tagsByProductId[p.id] || [];
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -76,12 +98,87 @@ function renderMatchRows(products, matchesByProductId) {
         </div>
       </td>
 
+      <td>
+        <div class="tags-cell" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;"></div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <select class="tag-picker"></select>
+          <button class="addTag">Add</button>
+        </div>
+      </td>
+
       <td><button class="saveMatch">${m ? "Update" : "Save"}</button></td>
     `;
 
-    // Subtle prefill highlight
+    // prefill highlight
     if (m?.competitor_sku)  tr.querySelector(".comp-sku").style.background  = "rgba(59,130,246,.12)";
     if (m?.competitor_barcode) tr.querySelector(".comp-bar").style.background = "rgba(59,130,246,.12)";
+
+    // render current tags
+    const tagsCell = tr.querySelector(".tags-cell");
+    const renderBadges = async () => {
+      tagsCell.innerHTML = "";
+      const r = await fetch(`${API}/api/tags/by_products`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_ids: [p.id] })
+      });
+      const data = r.ok ? await r.json() : {};
+      const tags = data[p.id] || [];
+      for (const t of tags) {
+        const badge = makeTagBadge(t, async () => {
+          await fetch(`${API}/api/tags/unassign`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ product_id: p.id, tag_id: t.id })
+          });
+          await renderBadges();
+        });
+        tagsCell.appendChild(badge);
+      }
+    };
+    // initial badges
+    for (const t of prodTags) {
+      const badge = makeTagBadge(t, async () => {
+        await fetch(`${API}/api/tags/unassign`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ product_id: p.id, tag_id: t.id })
+        });
+        await renderBadges();
+      });
+      tagsCell.appendChild(badge);
+    }
+
+    // load picker options
+    (async () => {
+      const picker = tr.querySelector(".tag-picker");
+      await (async function loadPicker() {
+        const r = await fetch(`${API}/api/tags`);
+        const tags = r.ok ? await r.json() : [];
+        picker.innerHTML = "";
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "Choose tag…";
+        picker.appendChild(opt);
+        for (const t of tags) {
+          const o = document.createElement("option");
+          o.value = String(t.id);
+          o.textContent = t.name;
+          picker.appendChild(o);
+        }
+      })();
+    })();
+
+    tr.querySelector(".addTag").onclick = async () => {
+      const tagId = Number(tr.querySelector(".tag-picker").value || 0);
+      if (!tagId) return;
+      await fetch(`${API}/api/tags/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_id: p.id, tag_id: tagId })
+      });
+      await renderBadges();
+    };
 
     tr.querySelector(".saveMatch").onclick = async () => {
       const compSku = tr.querySelector(".comp-sku").value.trim() || null;
@@ -105,7 +202,6 @@ function renderMatchRows(products, matchesByProductId) {
       tr.querySelector(".saveMatch").textContent = "Update";
       tr.querySelector(".comp-sku").style.background = compSku ? "rgba(59,130,246,.12)" : "";
       tr.querySelector(".comp-bar").style.background = compBar ? "rgba(59,130,246,.12)" : "";
-      // Reload just this row's link if needed:
       await reloadOneRowLink(p.id, tr);
       alert("Saved");
     };
@@ -115,7 +211,6 @@ function renderMatchRows(products, matchesByProductId) {
 }
 
 async function reloadOneRowLink(productId, tr) {
-  // re-fetch matches/lookup for this single product to refresh the link (if a snapshot exists)
   const r = await fetch(`${API}/api/matches/lookup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -127,7 +222,6 @@ async function reloadOneRowLink(productId, tr) {
 
   const skuCell = tr.querySelector(".comp-sku")?.parentElement;
   if (skuCell && m.competitor_url) {
-    // add/update the 🔗 anchor
     let a = skuCell.querySelector("a.link-btn");
     if (!a) {
       a = document.createElement("a");
@@ -144,6 +238,9 @@ async function reloadOneRowLink(productId, tr) {
 loadProductsBtn.onclick = () => { page = 1; loadProducts(); };
 prevPageBtn.onclick = () => { page = Math.max(1, page - 1); loadProducts(); };
 nextPageBtn.onclick = () => { page = page + 1; loadProducts(); };
+
+// Refetch on tag filter change
+tagFilter.onchange = () => { page = 1; loadProducts(); };
 
 autoMatchBtn.onclick = async () => {
   const code = siteSelect.value;

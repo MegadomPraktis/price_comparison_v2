@@ -4,11 +4,11 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.orm import aliased
 from datetime import datetime
 
-from app.models import Product, Match, CompetitorSite, PriceSnapshot
+from app.models import Product, Match, CompetitorSite, PriceSnapshot, ProductTag
 from app.schemas import MatchOut, MatchCreate
 from app.scrapers.base import BaseScraper
 
-def list_products_simple(session, page: int, page_size: int, q: Optional[str]) -> List[Product]:
+def list_products_simple(session, page: int, page_size: int, q: Optional[str], tag_id: Optional[int] = None) -> List[Product]:
     stmt = select(Product).order_by(Product.id.desc())
     if q:
         like = f"%{q}%"
@@ -17,9 +17,12 @@ def list_products_simple(session, page: int, page_size: int, q: Optional[str]) -
             (Product.name.ilike(like)) |
             (Product.barcode.ilike(like))
         )
+    if tag_id:
+        # join product_tags
+        stmt = stmt.join(ProductTag, ProductTag.c.product_id == Product.id).where(ProductTag.c.tag_id == tag_id)
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     res = session.execute(stmt)
-    return res.scalars().all()
+    return res.scalars().unique().all()
 
 def get_site(session, site_code: str) -> CompetitorSite:
     r = session.execute(select(CompetitorSite).where(CompetitorSite.code == site_code))
@@ -28,16 +31,17 @@ def get_site(session, site_code: str) -> CompetitorSite:
         raise ValueError(f"Unknown site code: {site_code}")
     return site
 
-def list_matches(session, site_code: str, page: int, page_size: int) -> List[MatchOut]:
+def list_matches(session, site_code: str, page: int, page_size: int, tag_id: Optional[int] = None) -> List[MatchOut]:
     site = get_site(session, site_code)
     stmt = (
         select(Match, Product)
         .join(Product, Product.id == Match.product_id)
         .where(Match.site_id == site.id)
-        .order_by(Match.updated_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
+    if tag_id:
+        stmt = stmt.join(ProductTag, ProductTag.c.product_id == Product.id).where(ProductTag.c.tag_id == tag_id)
+    stmt = stmt.order_by(Match.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
+
     res = session.execute(stmt)
     out: List[MatchOut] = []
     for m, p in res.all():

@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 from sqlalchemy import (
-    Integer, String, Float, DateTime, ForeignKey, UniqueConstraint, Text, Index, select
+    Integer, String, Float, DateTime, ForeignKey, UniqueConstraint, Text, Index, select, Table, Column
 )
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from app.db import Base
+
+# --- NEW: ProductTag association table (many-to-many)
+from sqlalchemy import MetaData
+ProductTag = Table(
+    "product_tags", Base.metadata,
+    Column("product_id", Integer, ForeignKey("products.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+    Index("ix_product_tags_product_id", "product_id"),
+    Index("ix_product_tags_tag_id", "tag_id"),
+    UniqueConstraint("product_id", "tag_id", name="uq_product_tag")
+)
 
 class Product(Base):
     __tablename__ = "products"
@@ -16,6 +27,9 @@ class Product(Base):
     price_promo: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # --- NEW: m2m to tags
+    tags = relationship("Tag", secondary=ProductTag, back_populates="products", lazy="selectin")
 
 class CompetitorSite(Base):
     __tablename__ = "competitor_sites"
@@ -54,6 +68,15 @@ class PriceSnapshot(Base):
     regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     promo_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+# --- NEW: Tag model
+class Tag(Base):
+    __tablename__ = "tags"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    # backref
+    products = relationship("Product", secondary=ProductTag, back_populates="tags", lazy="selectin")
 
 def select_sites():
     return select(CompetitorSite)

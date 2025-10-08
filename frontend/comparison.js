@@ -1,4 +1,4 @@
-import { API, loadSitesInto, escapeHtml, fmtPrice } from "./shared.js";
+import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
 const siteSelect = document.getElementById("siteSelect");
 const refreshSitesBtn = document.getElementById("refreshSites");
@@ -10,10 +10,21 @@ const scrapeNowBtn = document.getElementById("scrapeNow");
 const compareLimit = document.getElementById("compareLimit");
 const tbodyCompare = document.querySelector("#compareTable tbody");
 
+// NEW: tag filter
+const tagFilter = document.getElementById("tagFilter");
+await loadTagsInto(tagFilter, true);
+
 async function loadLatest() {
   const code = siteSelect.value;
   const limit = compareLimit.value || "200";
-  const r = await fetch(`${API}/api/compare?site_code=${encodeURIComponent(code)}&limit=${encodeURIComponent(limit)}&source=snapshots`);
+  const tagId = tagFilter.value || "";
+  const url = new URL(`${API}/api/compare`);
+  url.searchParams.set("site_code", code);
+  url.searchParams.set("limit", limit);
+  url.searchParams.set("source", "snapshots");
+  if (tagId) url.searchParams.set("tag_id", tagId);
+
+  const r = await fetch(url);
   if (!r.ok) {
     const err = await r.text();
     alert("Load failed:\n" + err);
@@ -26,7 +37,6 @@ async function loadLatest() {
 async function scrapeNow() {
   const code = siteSelect.value;
   const limit = compareLimit.value || "200";
-  // trigger scraping (writes snapshots)
   const r = await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(code)}&limit=${encodeURIComponent(limit)}`, {
     method: "POST"
   });
@@ -37,7 +47,6 @@ async function scrapeNow() {
   }
   const { written } = await r.json();
   alert(`Scraped and saved ${written} snapshot(s).`);
-  // then load the latest from DB
   await loadLatest();
 }
 
@@ -64,12 +73,14 @@ function decideHighlight(our, their) {
   const o = Number(our ?? NaN), t = Number(their ?? NaN);
   if (Number.isFinite(o) && Number.isFinite(t)) {
     return { oursLower: o < t, theirsLower: t < o };
-    }
+  }
   return { oursLower: false, theirsLower: false };
 }
 
 loadLatestBtn.onclick = loadLatest;
 scrapeNowBtn.onclick = scrapeNow;
 
-// On first load: show latest from DB (no scraping)
+// Update when tag filter changes
+tagFilter.onchange = loadLatest;
+
 await loadLatest();

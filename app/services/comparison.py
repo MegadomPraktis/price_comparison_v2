@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
-from typing import List, Iterable, Set
+from typing import List, Iterable, Set, Optional
 import os
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select, func, text, and_
 from sqlalchemy.orm import aliased
 
-from app.models import Product, Match, CompetitorSite, PriceSnapshot
+from app.models import Product, Match, CompetitorSite, PriceSnapshot, ProductTag
 from app.schemas import ComparisonRowOut
 from app.scrapers.base import BaseScraper
 
@@ -65,20 +64,16 @@ async def scrape_and_snapshot(session, scraper: BaseScraper, limit: int = 200) -
         if not c:
             continue
 
-        # Backfill identifiers discovered by the scraper
         if c.competitor_sku and not (m.competitor_sku or "").strip():
             m.competitor_sku = c.competitor_sku
         if c.competitor_barcode and not (m.competitor_barcode or "").strip():
             m.competitor_barcode = c.competitor_barcode
 
-        # Preferred key for snapshots: SKU if present, else barcode
         key_sku = (m.competitor_sku or "").strip() or None
         key_bar = (m.competitor_barcode or "").strip() or None
         if not key_sku and not key_bar:
-            # nothing to key by
             continue
 
-        # Fetch latest snapshot for the same key (NULL-safe equality)
         latest_q = (
             select(PriceSnapshot)
             .where(
@@ -139,9 +134,10 @@ def _prune_snapshots_for(session, site_id: int, keys: Iterable[tuple], keep: int
         session.execute(text(sql), {"site_id": site_id, "sku": sku, "bar": bar, "keep": keep})
     session.commit()
 
-def build_rows_from_snapshots(session, site_code: str, limit: int = 200) -> List[ComparisonRowOut]:
+def build_rows_from_snapshots(session, site_code: str, limit: int = 200, tag_id: Optional[int] = None) -> List[ComparisonRowOut]:
     """
     Load latest snapshot per match using SKU when available, else Barcode.
+    Optionally restrict to products that have a given tag.
     """
     site = _get_site(session, site_code)
 
@@ -167,13 +163,17 @@ def build_rows_from_snapshots(session, site_code: str, limit: int = 200) -> List
     )
     SnapBAR = aliased(PriceSnapshot)
 
-    base = (
+    base_stmt = (
         select(Product, Match)
         .join(Match, Match.product_id == Product.id)
         .where(Match.site_id == site.id)
         .order_by(Product.id.desc())
         .limit(limit)
-    ).subquery()
+    )
+    if tag_id:
+        base_stmt = base_stmt.join(ProductTag, ProductTag.c.product_id == Product.id).where(ProductTag.c.tag_id == tag_id)
+
+    base = base_stmt.subquery()
 
     stmt = (
         select(

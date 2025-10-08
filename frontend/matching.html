@@ -11,6 +11,7 @@
   <h1>Matching</h1>
   <nav>
     <a class="card" href="./comparison.html">Comparison</a>
+    <a class="card" href="./tags.html">Tags</a> <!-- NEW -->
     <a class="card" href="./erp.html">ERP Import</a>
     <span style="flex:1"></span>
     <select id="siteSelect"></select>
@@ -21,6 +22,8 @@
 <main>
   <div class="toolbar">
     <input id="searchInput" placeholder="Search SKU/Name/Barcode..."/>
+    <!-- NEW: Tag filter -->
+    <select id="tagFilter"></select>
     <button id="loadProducts">Load Products</button>
     <button id="autoMatch">Auto-match by Barcode</button>
   </div>
@@ -33,6 +36,7 @@
       <th>Name</th>
       <th>Competitor SKU</th>
       <th>Competitor Barcode</th>
+      <th>Tags</th> <!-- NEW -->
       <th>Save</th>
     </tr>
     </thead>

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
@@ -20,9 +20,10 @@ async def api_list_matches(
     site_code: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    tag_id: Optional[int] = Query(None),
 ):
     with get_session() as session:
-        return list_matches(session, site_code=site_code, page=page, page_size=page_size)
+        return list_matches(session, site_code=site_code, page=page, page_size=page_size, tag_id=tag_id)
 
 @router.post("/matches", response_model=MatchOut)
 async def api_create_match(payload: MatchCreate):

@@ -12,7 +12,9 @@ async def api_list_products(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     q: Optional[str] = Query(None),
+    tag_id: Optional[int] = Query(None),
 ):
     with get_session() as session:
-        products = list_products_simple(session, page=page, page_size=page_size, q=q)
+        products = list_products_simple(session, page=page, page_size=page_size, q=q, tag_id=tag_id)
+        # tags relationship is loaded via selectin (see models)
         return [ProductOut.model_validate(p) for p in products]

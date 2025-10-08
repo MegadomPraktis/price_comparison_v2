@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from typing import Optional
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field, ConfigDict
 
 class SiteOut(BaseModel):
@@ -13,6 +13,22 @@ class SiteCreate(BaseModel):
     code: str
     name: str
     base_url: str
+
+# --- NEW: Tag schemas
+class TagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+
+class TagCreate(BaseModel):
+    name: str
+
+class TagAssign(BaseModel):
+    product_id: int
+    tag_id: int
+
+class TagsByProductsRequest(BaseModel):
+    product_ids: List[int]
 
 class ProductIn(BaseModel):
     sku: str
@@ -28,6 +44,8 @@ class ProductOut(BaseModel):
     name: str
     price_regular: Optional[float] = None
     price_promo: Optional[float] = None
+    # --- NEW: include tags for convenience in UI (optional)
+    tags: List[TagOut] = []
     class Config:
         from_attributes = True
 

@@ -17,9 +17,11 @@ from app.routers import products as r_products
 from app.routers import matching as r_matching
 from app.routers import comparison as r_comparison
 from app.routers import erp as r_erp
+# --- NEW
+from app.routers import tags as r_tags
 from app.registry import register_default_scrapers
 
-app = FastAPI(title="Price Compare Service (MSSQL)", version="0.4.0")
+app = FastAPI(title="Price Compare Service (MSSQL)", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,7 +30,6 @@ app.add_middleware(
     allow_methods=["*"],
 )
 
-# Resolve frontend dir robustly (no more 404 for styles.css)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
@@ -38,14 +39,13 @@ app.include_router(r_products.router, prefix="/api", tags=["products"])
 app.include_router(r_matching.router, prefix="/api", tags=["matching"])
 app.include_router(r_comparison.router, prefix="/api", tags=["comparison"])
 app.include_router(r_erp.router, prefix="/api", tags=["erp"])
+# --- NEW
+app.include_router(r_tags.router, prefix="/api", tags=["tags"])
 
 @app.on_event("startup")
 def startup():
-    # 1) Ensure tables exist
-    init_db()  # sync; creates tables if missing
-    # 2) Register scrapers
+    init_db()
     register_default_scrapers()
-    # 3) Seed default site once
     from sqlalchemy import select
     from app.models import CompetitorSite
     with get_session() as session:
