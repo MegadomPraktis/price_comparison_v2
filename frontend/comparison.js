@@ -5,12 +5,15 @@ const refreshSitesBtn = document.getElementById("refreshSites");
 refreshSitesBtn.onclick = () => loadSitesInto(siteSelect);
 await loadSitesInto(siteSelect);
 
+// 🔹 Automatically reload when changing site
+siteSelect.onchange = () => {
+  loadLatest();
+};
+
 const loadLatestBtn = document.getElementById("loadLatest");
 const scrapeNowBtn = document.getElementById("scrapeNow");
 const compareLimit = document.getElementById("compareLimit");
 const tbodyCompare = document.querySelector("#compareTable tbody");
-
-// NEW: tag filter
 const tagFilter = document.getElementById("tagFilter");
 await loadTagsInto(tagFilter, true);
 
@@ -70,7 +73,8 @@ function renderCompare(rows) {
 }
 
 function decideHighlight(our, their) {
-  const o = Number(our ?? NaN), t = Number(their ?? NaN);
+  const o = Number(our ?? NaN);
+  const t = Number(their ?? NaN);
   if (Number.isFinite(o) && Number.isFinite(t)) {
     return { oursLower: o < t, theirsLower: t < o };
   }
@@ -79,8 +83,7 @@ function decideHighlight(our, their) {
 
 loadLatestBtn.onclick = loadLatest;
 scrapeNowBtn.onclick = scrapeNow;
-
-// Update when tag filter changes
 tagFilter.onchange = loadLatest;
 
+// Initial load
 await loadLatest();

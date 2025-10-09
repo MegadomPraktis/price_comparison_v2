@@ -17,11 +17,10 @@ from app.routers import products as r_products
 from app.routers import matching as r_matching
 from app.routers import comparison as r_comparison
 from app.routers import erp as r_erp
-# --- NEW
 from app.routers import tags as r_tags
 from app.registry import register_default_scrapers
 
-app = FastAPI(title="Price Compare Service (MSSQL)", version="0.5.0")
+app = FastAPI(title="Price Compare Service (MSSQL)", version="0.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,7 +38,6 @@ app.include_router(r_products.router, prefix="/api", tags=["products"])
 app.include_router(r_matching.router, prefix="/api", tags=["matching"])
 app.include_router(r_comparison.router, prefix="/api", tags=["comparison"])
 app.include_router(r_erp.router, prefix="/api", tags=["erp"])
-# --- NEW
 app.include_router(r_tags.router, prefix="/api", tags=["tags"])
 
 @app.on_event("startup")
@@ -49,9 +47,22 @@ def startup():
     from sqlalchemy import select
     from app.models import CompetitorSite
     with get_session() as session:
+        # Praktiker
         site = session.execute(select(CompetitorSite).where(CompetitorSite.code == "praktiker")).scalars().first()
         if not site:
             session.add(CompetitorSite(code="praktiker", name="Praktiker", base_url="https://praktiker.bg"))
+            session.commit()
+
+        # Mr. Bricolage
+        mrb = session.execute(select(CompetitorSite).where(CompetitorSite.code == "mrbricolage")).scalars().first()
+        if not mrb:
+            session.add(CompetitorSite(code="mrbricolage", name="Mr. Bricolage", base_url="https://mr-bricolage.bg"))
+            session.commit()
+
+        # ✅ MashiniBG
+        mash = session.execute(select(CompetitorSite).where(CompetitorSite.code == "mashinibg")).scalars().first()
+        if not mash:
+            session.add(CompetitorSite(code="mashinibg", name="MashiniBG", base_url="https://www.onlinemashini.bg"))
             session.commit()
 
 @app.get("/", response_class=HTMLResponse)
