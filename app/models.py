@@ -22,6 +22,8 @@ class Product(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sku: Mapped[str] = mapped_column(String(64), index=True, unique=True)
     barcode: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    item_number: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     name: Mapped[str] = mapped_column(Text)   # UTF-8: Cyrillic-safe
     price_regular: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_promo: Mapped[float | None] = mapped_column(Float, nullable=True)

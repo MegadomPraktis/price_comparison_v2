@@ -25,6 +25,8 @@ class BaseScraper:
         raise NotImplementedError
     async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
         raise NotImplementedError
+    async def search_by_item_number(self, item_number: Optional[str], brand: Optional[str] = None) -> Optional[SearchResult]:
+        return None
 
 class ScraperRegistry:
     def __init__(self):

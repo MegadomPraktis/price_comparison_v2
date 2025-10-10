@@ -36,6 +36,8 @@ class ProductIn(BaseModel):
     name: str
     price_regular: Optional[float] = None
     price_promo: Optional[float] = None
+    item_number: Optional[str] = None
+    brand: Optional[str] = None
 
 class ProductOut(BaseModel):
     id: int
@@ -44,7 +46,8 @@ class ProductOut(BaseModel):
     name: str
     price_regular: Optional[float] = None
     price_promo: Optional[float] = None
-    # --- NEW: include tags for convenience in UI (optional)
+    item_number: Optional[str] = None
+    brand: Optional[str] = None
     tags: List[TagOut] = []
     class Config:
         from_attributes = True

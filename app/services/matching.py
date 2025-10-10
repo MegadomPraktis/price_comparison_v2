@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 from typing import List, Optional
-from sqlalchemy import select, func, and_
 from sqlalchemy.orm import aliased
 from datetime import datetime
+from sqlalchemy import select, func, and_, exists
 
 from app.models import Product, Match, CompetitorSite, PriceSnapshot, ProductTag
 from app.schemas import MatchOut, MatchCreate
@@ -93,9 +93,11 @@ async def auto_match_for_site(session, scraper: BaseScraper, limit: int = 100) -
     sub = select(Match.product_id).where(Match.site_id == site.id)
     stmt = (
         select(Product)
-        .where(Product.barcode.is_not(None), Product.id.not_in(sub))
+        .where(Product.id.not_in(sub))
         .order_by(Product.id.desc()).limit(limit)
     )
+
+    # Prefer barcode for others; for Mashini prefer item_number
     res = session.execute(stmt)
     products = res.scalars().all()
 
@@ -103,15 +105,28 @@ async def auto_match_for_site(session, scraper: BaseScraper, limit: int = 100) -
     found = 0
     for p in products:
         attempted += 1
-        sres = await scraper.search_by_barcode(p.barcode)
-        if sres and (sres.competitor_sku or sres.competitor_barcode):
+        sres = None
+        if scraper.site_code == "mashinibg" and p.item_number:
+            # Try by item number (+ brand hint)
+            try:
+                sres = await scraper.search_by_item_number(p.item_number, brand=p.brand)
+            except Exception:
+                sres = None
+        if (not sres) and p.barcode:
+            # Fallback to barcode
+            try:
+                sres = await scraper.search_by_barcode(p.barcode)
+            except Exception:
+                sres = None
+
+        if sres and (sres.competitor_sku or sres.competitor_barcode or sres.url):
             m = Match(
                 product_id=p.id, site_id=site.id,
                 competitor_sku=sres.competitor_sku,
                 competitor_barcode=sres.competitor_barcode,
             )
-            session.add(m)
-            found += 1
+            session.add(m); found += 1
+
     if attempted:
         session.commit()
     return attempted, found
@@ -200,3 +215,45 @@ def get_matches_for_product_ids(session, site_code: str, product_ids: List[int])
             competitor_url=row.snap_url,
         ))
     return out
+
+def _normlike(col):
+    # normalize for case / spaces / dots: lower(replace(replace(col,' ',''),'.',''))
+    return func.lower(func.replace(func.replace(col, " ", ""), ".", ""))
+
+def list_products_simple(session, page: int, page_size: int, q: Optional[str],
+                         tag_id: Optional[int] = None,
+                         brand: Optional[str] = None,                # NEW
+                         site_code: Optional[str] = None,            # NEW
+                         matched: Optional[str] = None               # NEW ('matched'|'unmatched')
+                         ) -> List[Product]:
+    stmt = select(Product).order_by(Product.id.desc())
+
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            (Product.sku.ilike(like)) |
+            (Product.name.ilike(like)) |
+            (Product.barcode.ilike(like)) |
+            (Product.item_number.ilike(like)) |          # NEW
+            (Product.brand.ilike(like))                  # NEW
+        )
+
+    if brand:
+        norm = brand.replace(" ", "").replace(".", "").lower()
+        stmt = stmt.where(_normlike(Product.brand).ilike(f"%{norm}%"))  # NEW
+
+    if tag_id:
+        stmt = stmt.join(ProductTag, ProductTag.c.product_id == Product.id)\
+                   .where(ProductTag.c.tag_id == tag_id)
+
+    # Matched/Unmatched per selected site
+    if site_code and matched:
+        site = get_site(session, site_code)  # reuse existing helper
+        sub = select(Match.id).where(and_(Match.product_id == Product.id, Match.site_id == site.id))
+        if matched == "matched":
+            stmt = stmt.where(exists(sub))
+        elif matched == "unmatched":
+            stmt = stmt.where(~exists(sub))
+
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+    return session.execute(stmt).scalars().unique().all()

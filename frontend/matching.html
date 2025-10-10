@@ -22,11 +22,21 @@
 <main>
   <div class="toolbar">
     <input id="searchInput" placeholder="Search SKU/Name/Barcode..."/>
-    <!-- NEW: Tag filter -->
+
+    <!-- NEW: Brand filters -->
+    <input id="brandInput" placeholder="Brand…" />
+    <select id="brandSelect"></select>
+
+    <!-- NEW: match toggles -->
+    <button id="showMatched">Matched</button>
+    <button id="showUnmatched">Unmatched</button>
+    <button id="showAll">All</button>
+
+    <!-- existing -->
     <select id="tagFilter"></select>
     <button id="loadProducts">Load Products</button>
     <button id="autoMatch">Auto-match by Barcode</button>
-    <button id="refreshPraktisAssets">Refresh Praktis images &amp; links</button> <!-- NEW -->
+    <button id="refreshPraktisAssets">Refresh Praktis images &amp; links</button>
   </div>
 
   <table id="matchTable">

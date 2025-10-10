@@ -221,24 +221,22 @@ class MashiniBgScraper(BaseScraper):
         self._sem = asyncio.Semaphore(CONCURRENCY)
 
     # Used by auto-match (barcode → a potential SKU we can store)
-    async def search_by_barcode(self, barcode: Optional[str]) -> Optional[SearchResult]:
-        if not barcode:
+    async def search_by_item_number(self, item_number: Optional[str], brand: Optional[str] = None) -> Optional[SearchResult]:
+        if not item_number:
             return None
+        query = item_number if not brand else f"{item_number} {brand}"
+        url = MASHINIBG_SEARCH_URL.format(url_quote(str(query), safe=""))
         async with self._sem:
             await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
             await self._bucket.take()
-            # in search_by_barcode(...)
-            html = await _get_html(MASHINIBG_SEARCH_URL.format(url_quote(str(barcode), safe="")))
-
+            html = await _get_html(url)
         data, pdp_link = _parse_search_card(html)
         if not data and not pdp_link:
             return None
-
-        # We usually don’t have an internal “SKU” in the URL, but keep URL/name
         return SearchResult(
-            competitor_sku=None,                   # Mashini may not expose a canonical numeric id on list
-            competitor_barcode=str(barcode),       # keep the barcode we searched with
-            url=(data or {}).get("url") or pdp_link,
+            competitor_sku=None,
+            competitor_barcode=None,
+            url=(data or {}).get("url") or pdp_link or url,
             name=(data or {}).get("name"),
         )
 
