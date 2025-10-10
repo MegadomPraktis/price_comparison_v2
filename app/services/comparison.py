@@ -1,227 +1,221 @@
-from typing import List, Iterable, Set, Optional
-import os
-from decimal import Decimal, InvalidOperation
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+from datetime import datetime
+from typing import List, Optional, Dict, Tuple
 
-from sqlalchemy import select, func, text, and_
-from sqlalchemy.orm import aliased
+from sqlalchemy import select, func, desc, or_
+from sqlalchemy.orm import Session
 
-from app.models import Product, Match, CompetitorSite, PriceSnapshot, ProductTag
-from app.schemas import ComparisonRowOut
-from app.scrapers.base import BaseScraper
+from app.models import (
+    Product,
+    Match,
+    PriceSnapshot,
+    CompetitorSite,
+    ProductTag,
+    Tag,
+)
+from app.scrapers.base import BaseScraper, CompetitorDetail
 
-# Tunables via .env
-SNAPSHOT_WRITE_ON_CHANGE_ONLY = os.getenv("SNAPSHOT_WRITE_ON_CHANGE_ONLY", "true").lower() in ("1","true","yes","y")
-SNAPSHOT_PRICE_EPSILON = float(os.getenv("SNAPSHOT_PRICE_EPSILON", "0.001"))
-SNAPSHOT_MAX_PER_SKU = int(os.getenv("SNAPSHOT_MAX_PER_SKU", "3") or "0")  # per (site, competitor_sku, competitor_barcode)
 
-def _get_site(session, code: str) -> CompetitorSite:
-    r = session.execute(select(CompetitorSite).where(CompetitorSite.code == code))
-    s = r.scalars().first()
-    if not s:
-        raise ValueError(f"Unknown site: {code}")
-    return s
-
-def _to_dec(v):
-    if v is None: return None
-    try: return Decimal(str(v))
-    except (InvalidOperation, ValueError, TypeError): return None
-
-def _changed(last_regular, last_promo, new_regular, new_promo, eps: float) -> bool:
-    a = _to_dec(last_regular); b = _to_dec(new_regular)
-    if a is None and b is not None: return True
-    if a is not None and b is None: return True
-    if a is not None and b is not None and abs(a - b) > Decimal(str(eps)): return True
-    a = _to_dec(last_promo); b = _to_dec(new_promo)
-    if a is None and b is not None: return True
-    if a is not None and b is None: return True
-    if a is not None and b is not None and abs(a - b) > Decimal(str(eps)): return True
-    return False
-
-async def scrape_and_snapshot(session, scraper: BaseScraper, limit: int = 200) -> int:
+def _norm_brand_sql(col):
     """
-    Scrape competitor data for matched items (up to limit) and write snapshots.
-    - Search rule: scraper prefers SKU if present; else barcode (handled inside scraper).
-    - If we searched by barcode and derive a SKU, we backfill it to Match and snapshots.
+    Case-insensitive brand compare, ignoring '.' and whitespace.
+    lower(replace(replace(col, '.', ''), ' ', ''))
     """
-    site = _get_site(session, scraper.site_code)
-    stmt = (
-        select(Product, Match)
-        .join(Match, Match.product_id == Product.id)
-        .where(Match.site_id == site.id)
-        .order_by(Product.id.desc())
-        .limit(limit)
-    )
-    pairs = session.execute(stmt).all()
+    return func.lower(func.replace(func.replace(col, ".", ""), " ", ""))
 
-    import asyncio
-    tasks = [scraper.fetch_product_by_match(m) for _, m in pairs]
-    comp_items = await asyncio.gather(*tasks)
 
-    written = 0
-    touched_keys: Set[tuple] = set()  # (sku, barcode)
+def _effective_price(promo: Optional[float], regular: Optional[float]) -> Optional[float]:
+    return promo if promo is not None else regular
 
-    for (p, m), c in zip(pairs, comp_items):
-        if not c:
-            continue
 
-        if c.competitor_sku and not (m.competitor_sku or "").strip():
-            m.competitor_sku = c.competitor_sku
-        if c.competitor_barcode and not (m.competitor_barcode or "").strip():
-            m.competitor_barcode = c.competitor_barcode
-
-        key_sku = (m.competitor_sku or "").strip() or None
-        key_bar = (m.competitor_barcode or "").strip() or None
-        if not key_sku and not key_bar:
-            continue
-
-        latest_q = (
+def _latest_snapshot_stmt(site_id: int, comp_sku: Optional[str], comp_barcode: Optional[str]):
+    """
+    Latest snapshot for SKU (preferred) or fallback to BARCODE.
+    """
+    if comp_sku:
+        return (
             select(PriceSnapshot)
-            .where(
-                PriceSnapshot.site_id == site.id,
-                ((PriceSnapshot.competitor_sku == key_sku) | (PriceSnapshot.competitor_sku.is_(None) & (key_sku is None))),
-                ((PriceSnapshot.competitor_barcode == key_bar) | (PriceSnapshot.competitor_barcode.is_(None) & (key_bar is None))),
-            )
-            .order_by(PriceSnapshot.ts.desc())
+            .where(PriceSnapshot.site_id == site_id, PriceSnapshot.competitor_sku == comp_sku)
+            .order_by(desc(PriceSnapshot.ts))
             .limit(1)
         )
-        last = session.execute(latest_q).scalars().first()
-
-        write_it = True
-        if SNAPSHOT_WRITE_ON_CHANGE_ONLY and last:
-            if not _changed(last.regular_price, last.promo_price, c.regular_price, c.promo_price, SNAPSHOT_PRICE_EPSILON):
-                write_it = False
-
-        if write_it:
-            session.add(PriceSnapshot(
-                site_id=site.id,
-                competitor_sku=key_sku,          # store both identifiers
-                competitor_barcode=key_bar,
-                name=c.name,
-                regular_price=c.regular_price,
-                promo_price=c.promo_price,
-                url=c.url
-            ))
-            written += 1
-            touched_keys.add((key_sku, key_bar))
-
-    # Commit: snapshots + any backfilled Match identifiers
-    if written or pairs:
-        session.commit()
-
-    # Prune newest N per key if configured
-    if SNAPSHOT_MAX_PER_SKU and touched_keys:
-        _prune_snapshots_for(session, site.id, touched_keys, SNAPSHOT_MAX_PER_SKU)
-
-    return written
-
-def _prune_snapshots_for(session, site_id: int, keys: Iterable[tuple], keep: int) -> None:
-    sql = """
-    WITH ranked AS (
-      SELECT id,
-             ROW_NUMBER() OVER (
-               PARTITION BY site_id, competitor_sku, competitor_barcode
-               ORDER BY ts DESC
-             ) AS rn
-      FROM dbo.price_snapshots
-      WHERE site_id = :site_id
-        AND ( (competitor_sku = :sku) OR (competitor_sku IS NULL AND :sku IS NULL) )
-        AND ( (competitor_barcode = :bar) OR (competitor_barcode IS NULL AND :bar IS NULL) )
-    )
-    DELETE FROM dbo.price_snapshots
-    WHERE id IN (SELECT id FROM ranked WHERE rn > :keep);
-    """
-    for sku, bar in keys:
-        session.execute(text(sql), {"site_id": site_id, "sku": sku, "bar": bar, "keep": keep})
-    session.commit()
-
-def build_rows_from_snapshots(session, site_code: str, limit: int = 200, tag_id: Optional[int] = None) -> List[ComparisonRowOut]:
-    """
-    Load latest snapshot per match using SKU when available, else Barcode.
-    Optionally restrict to products that have a given tag.
-    """
-    site = _get_site(session, site_code)
-
-    latest_by_sku = (
-        select(
-            PriceSnapshot.competitor_sku.label("key_sku"),
-            func.max(PriceSnapshot.ts).label("max_ts")
+    if comp_barcode:
+        return (
+            select(PriceSnapshot)
+            .where(PriceSnapshot.site_id == site_id, PriceSnapshot.competitor_barcode == comp_barcode)
+            .order_by(desc(PriceSnapshot.ts))
+            .limit(1)
         )
-        .where(PriceSnapshot.site_id == site.id, PriceSnapshot.competitor_sku.is_not(None))
-        .group_by(PriceSnapshot.competitor_sku)
-        .subquery()
-    )
-    SnapSKU = aliased(PriceSnapshot)
+    # empty
+    return select(PriceSnapshot).where(PriceSnapshot.id == -1).limit(1)
 
-    latest_by_bar = (
-        select(
-            PriceSnapshot.competitor_barcode.label("key_bar"),
-            func.max(PriceSnapshot.ts).label("max_ts")
+
+def _product_base_query(
+    q: Optional[str],
+    tag_id: Optional[int],
+    brand: Optional[str],
+):
+    """
+    Build a selectable for products with optional q / tag / brand filters.
+    NOTE: expects Product.brand to exist.
+    """
+    stmt = select(Product)
+
+    # Free-text over SKU / Barcode / Name
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Product.sku.ilike(like),
+                Product.barcode.ilike(like),
+                Product.name.ilike(like),
+            )
         )
-        .where(PriceSnapshot.site_id == site.id, PriceSnapshot.competitor_barcode.is_not(None))
-        .group_by(PriceSnapshot.competitor_barcode)
-        .subquery()
-    )
-    SnapBAR = aliased(PriceSnapshot)
 
-    base_stmt = (
-        select(Product, Match)
-        .join(Match, Match.product_id == Product.id)
+    # Tag filter
+    if tag_id:
+        stmt = (
+            stmt.join(ProductTag, ProductTag.c.product_id == Product.id)
+                .where(ProductTag.c.tag_id == tag_id)
+        )
+
+    # Brand filter (case-insensitive, ignore '.' and spaces)
+    if brand:
+        norm = brand.strip().lower().replace(".", "").replace(" ", "")
+        stmt = stmt.where(_norm_brand_sql(Product.brand) == norm)
+
+    # Newest first (makes "limit" behave nicely)
+    stmt = stmt.order_by(desc(Product.id))
+    return stmt
+
+
+def build_rows_from_snapshots(
+    session: Session,
+    site_code: str,
+    limit: int = 200,
+    q: Optional[str] = None,
+    tag_id: Optional[int] = None,
+    brand: Optional[str] = None,
+) -> List[Dict]:
+    """
+    Rows for a single competitor site, already filtered by q / tag_id / brand.
+    Only returns rows for products that are **matched** to this site.
+    Includes product_brand and product_tags (as [{id,name}, …]) for frontend filters.
+    """
+    site = session.execute(
+        select(CompetitorSite).where(CompetitorSite.code == site_code)
+    ).scalars().first()
+    if not site:
+        return []
+
+    # 1) Filter products (q, tag, brand) then LIMIT
+    prod_stmt = _product_base_query(q=q, tag_id=tag_id, brand=brand).limit(limit)
+    products = session.execute(prod_stmt).scalars().all()
+    if not products:
+        return []
+
+    # 2) Gather product tags (id + name) for client fallback
+    prod_ids = [p.id for p in products]
+    tags_by_product: Dict[int, List[Dict[str, object]]] = {}
+    if prod_ids:
+        qtags = (
+            select(ProductTag.c.product_id, Tag.id, Tag.name)
+            .join(Tag, Tag.id == ProductTag.c.tag_id)
+            .where(ProductTag.c.product_id.in_(prod_ids))
+        )
+        for pid, tid, tname in session.execute(qtags).all():
+            tags_by_product.setdefault(pid, []).append({"id": tid, "name": tname})
+
+    # 3) Load matches for this site for these products
+    matches_by_pid: Dict[int, Match] = {}
+    if prod_ids:
+        qmatch = (
+            select(Match)
+            .where(Match.site_id == site.id, Match.product_id.in_(prod_ids))
+        )
+        for m in session.execute(qmatch).scalars().all():
+            matches_by_pid[m.product_id] = m
+
+    # 4) Build rows **only when there is a match** for this site
+    rows: List[Dict] = []
+    for p in products:
+        m = matches_by_pid.get(p.id)
+        if not m:
+            # ← critical: skip UNMATCHED products for comparison
+            continue
+
+        snap = session.execute(
+            _latest_snapshot_stmt(site.id, m.competitor_sku, m.competitor_barcode)
+        ).scalars().first()
+
+        # competitor fields (may be None if not scraped yet)
+        comp_name = snap.name if snap else None
+        comp_reg = snap.regular_price if snap else None
+        comp_prm = snap.promo_price if snap else None
+        comp_url = snap.url if snap else None
+
+        rows.append({
+            # ours
+            "product_sku": p.sku,
+            "product_barcode": p.barcode,
+            "product_name": p.name,
+            "product_price_regular": p.price_regular,
+            "product_price_promo": p.price_promo,
+            "product_brand": getattr(p, "brand", None),
+            "product_tags": tags_by_product.get(p.id, []),  # [{id,name}, …]
+
+            # competitor
+            "competitor_site": site.code,
+            "competitor_sku": m.competitor_sku,
+            "competitor_barcode": m.competitor_barcode,
+            "competitor_name": comp_name,
+            "competitor_price_regular": comp_reg,
+            "competitor_price_promo": comp_prm,
+            "competitor_url": comp_url,
+        })
+
+    return rows
+
+
+async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int = 200) -> int:
+    """
+    Iterate latest N matches for this site and persist snapshots.
+    """
+    site = session.execute(
+        select(CompetitorSite).where(CompetitorSite.code == scraper.site_code)
+    ).scalars().first()
+    if not site:
+        return 0
+
+    qmatch = (
+        select(Match, Product)
+        .join(Product, Product.id == Match.product_id)
         .where(Match.site_id == site.id)
-        .order_by(Product.id.desc())
+        .order_by(desc(Product.id))
         .limit(limit)
     )
-    if tag_id:
-        base_stmt = base_stmt.join(ProductTag, ProductTag.c.product_id == Product.id).where(ProductTag.c.tag_id == tag_id)
+    written = 0
+    for m, p in session.execute(qmatch).all():
+        try:
+            detail: Optional[CompetitorDetail] = await scraper.fetch_product_by_match(m)
+        except Exception:
+            continue
+        if not detail:
+            continue
 
-    base = base_stmt.subquery()
-
-    stmt = (
-        select(
-            base.c.sku, base.c.barcode, base.c.name,
-            base.c.price_regular, base.c.price_promo,
-            base.c.competitor_sku, base.c.competitor_barcode,
-            func.coalesce(SnapSKU.name,          SnapBAR.name),
-            func.coalesce(SnapSKU.regular_price, SnapBAR.regular_price),
-            func.coalesce(SnapSKU.promo_price,   SnapBAR.promo_price),
-            func.coalesce(SnapSKU.url,           SnapBAR.url),
+        snap = PriceSnapshot(
+            ts=datetime.utcnow(),
+            site_id=site.id,
+            competitor_sku=detail.competitor_sku or m.competitor_sku,
+            competitor_barcode=detail.competitor_barcode or m.competitor_barcode,
+            name=detail.name,
+            regular_price=detail.regular_price,
+            promo_price=detail.promo_price,
+            url=detail.url,
         )
-        .join(latest_by_sku, latest_by_sku.c.key_sku == base.c.competitor_sku, isouter=True)
-        .join(
-            SnapSKU,
-            and_(
-                SnapSKU.site_id == site.id,
-                SnapSKU.competitor_sku == latest_by_sku.c.key_sku,
-                SnapSKU.ts == latest_by_sku.c.max_ts,
-            ),
-            isouter=True
-        )
-        .join(latest_by_bar, latest_by_bar.c.key_bar == base.c.competitor_barcode, isouter=True)
-        .join(
-            SnapBAR,
-            and_(
-                SnapBAR.site_id == site.id,
-                SnapBAR.competitor_barcode == latest_by_bar.c.key_bar,
-                SnapBAR.ts == latest_by_bar.c.max_ts,
-            ),
-            isouter=True
-        )
-    )
-
-    rows: List[ComparisonRowOut] = []
-    for (p_sku, p_bar, p_name, p_reg, p_pro,
-         m_sku, m_bar, s_name, s_reg, s_pro, s_url) in session.execute(stmt).all():
-        rows.append(ComparisonRowOut(
-            product_sku=p_sku,
-            product_barcode=p_bar,
-            product_name=p_name,
-            product_price_regular=p_reg,
-            product_price_promo=p_pro,
-            competitor_site=site.code,
-            competitor_sku=m_sku,
-            competitor_barcode=m_bar,
-            competitor_name=s_name,
-            competitor_price_regular=s_reg,
-            competitor_price_promo=s_pro,
-            competitor_url=s_url,
-        ))
-    return rows
+        session.add(snap)
+        written += 1
+    if written:
+        session.commit()
+    return written

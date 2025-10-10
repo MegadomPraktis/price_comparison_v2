@@ -1,67 +1,103 @@
-// comparison.js — tags like matching.js, strict headers, correct td highlights, spinners + toasts
+// comparison.js — clone of Matching-style filters + comparison rendering
+// - Search (SKU/Name/Barcode)
+// - Tag filter (id="tagFilter" + tag_id param)
+// - Brand free text + Brand dropdown (same as Matching)
+// - Price status dropdown (All / Ours lower / Ours higher)
+// - All-sites default; N/A ignored for highlighting; spinner + green-text toasts
 import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
 // ---------------- DOM ----------------
-const siteSelect = document.getElementById("siteSelect");
+const siteSelect      = document.getElementById("siteSelect");
 const refreshSitesBtn = document.getElementById("refreshSites");
+const loadLatestBtn   = document.getElementById("loadLatest");
+const scrapeNowBtn    = document.getElementById("scrapeNow");
+const compareLimit    = document.getElementById("compareLimit");
 
-const loadLatestBtn = document.getElementById("loadLatest");
-const scrapeNowBtn = document.getElementById("scrapeNow");
-const compareLimit = document.getElementById("compareLimit"); // input the user already has
+// IMPORTANT: same id as in matching.html
+const tagFilter       = document.getElementById("tagFilter");
 
-const tagSelect = document.getElementById("tagSelect");          // tags dropdown
-const refreshTagsBtn = document.getElementById("refreshTags");   // ↻ Tags button
+const table  = document.getElementById("compareTable");
+const thead  = table.querySelector("thead") || table.createTHead();
+const tbody  = table.querySelector("tbody") || table.appendChild(document.createElement("tbody"));
 
-const table = document.getElementById("compareTable");
-const thead = table.querySelector("thead") || table.createTHead();
-let headRow = document.getElementById("compareHeadRow");
-if (!headRow) {
-  headRow = document.createElement("tr");
-  headRow.id = "compareHeadRow";
-  thead.appendChild(headRow);
+const pageInfo   = document.getElementById("pageInfo");
+const prevPageBtn= document.getElementById("prevPage");
+const nextPageBtn= document.getElementById("nextPage");
+
+// ---------------- Toolbar (inject if missing) ----------------
+const toolbar = document.querySelector(".toolbar");
+
+// Search input (SKU/Name/Barcode)
+let searchInput = document.getElementById("searchInput");
+if (!searchInput) {
+  searchInput = document.createElement("input");
+  searchInput.id = "searchInput";
+  searchInput.placeholder = "Search SKU/Name/Barcode…";
+  toolbar?.appendChild(searchInput);
 }
-const tbody = table.querySelector("tbody") || table.appendChild(document.createElement("tbody"));
 
-// Optional pager controls (if present in your HTML)
-const pageInfo = document.getElementById("pageInfo");
-const prevPageBtn = document.getElementById("prevPage");
-const nextPageBtn = document.getElementById("nextPage");
+// Brand free text — same id as Matching
+let brandInput = document.getElementById("brandInput");
+if (!brandInput) {
+  brandInput = document.createElement("input");
+  brandInput.id = "brandInput";
+  brandInput.placeholder = "Brand…";
+  toolbar?.appendChild(brandInput);
+}
 
-// ---------------- Paging (client-side) ----------------
+// Brand dropdown — same id as Matching
+let brandSelect = document.getElementById("brandSelect");
+if (!brandSelect) {
+  brandSelect = document.createElement("select");
+  brandSelect.id = "brandSelect";
+  toolbar?.appendChild(brandSelect);
+}
+function ensureBrandPlaceholder() {
+  let opt = brandSelect.querySelector("option[value='']");
+  if (!opt) {
+    opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— Brands —";
+    brandSelect.insertBefore(opt, brandSelect.firstChild);
+  } else {
+    opt.textContent = "— Brands —";
+  }
+}
+
+// Price status dropdown (All / Ours lower / Ours higher)
+let priceSelect = document.getElementById("priceStatus");
+if (!priceSelect) {
+  priceSelect = document.createElement("select");
+  priceSelect.id = "priceStatus";
+  [["", "All"], ["better", "Ours lower"], ["worse", "Ours higher"]].forEach(([v,l]) => {
+    const o = document.createElement("option"); o.value=v; o.textContent=l; priceSelect.appendChild(o);
+  });
+  toolbar?.appendChild(priceSelect);
+}
+
+// ---------------- State ----------------
 let page = 1;
-const PER_PAGE = 50;  // UI paging size
-let lastRows = [];    // last fetched raw rows (flat format from /api/compare)
+const PER_PAGE = 50;
+let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
-let lastTag = "all";
+let lastTag  = "";
 
-// ---------------- Small UI helpers ----------------
-function ensureAllSitesOption() {
-  if (!siteSelect) return;
-  if (!siteSelect.querySelector('option[value="all"]')) {
-    const opt = document.createElement("option");
-    opt.value = "all";
-    opt.textContent = "All sites";
-    siteSelect.insertBefore(opt, siteSelect.firstChild);
-  }
-}
-function ensureAllTagsOption() {
-  if (!tagSelect) return;
-  if (!tagSelect.querySelector('option[value="all"]')) {
-    const opt = document.createElement("option");
-    opt.value = "all";
-    opt.textContent = "All tags";
-    tagSelect.insertBefore(opt, tagSelect.firstChild);
-  }
-}
-function resetHead() {
-  thead.innerHTML = "";
-  const row = document.createElement("tr");
-  row.id = "compareHeadRow";
-  thead.appendChild(row);
-  return row;
-}
+// ---------------- CSS (spinner, highlights) ----------------
+(function injectCSS(){
+  if (document.getElementById("compare-extra-css")) return;
+  const s = document.createElement("style");
+  s.id = "compare-extra-css";
+  s.textContent = `
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+    .spin { animation: spin .9s linear infinite }
+    .compare-img{max-height:48px;max-width:80px;border-radius:6px}
+    td.green{ background:rgba(22,163,74,.15) }
+    td.red{ background:rgba(220,38,38,.12) }
+  `;
+  document.head.appendChild(s);
+})();
 
-// Spinner inside a button
+// ---------------- Spinner & Toasts ----------------
 function withSpinner(btn, runningText, fn) {
   return async (...args) => {
     if (!btn) return fn(...args);
@@ -69,173 +105,187 @@ function withSpinner(btn, runningText, fn) {
     btn.disabled = true;
     btn.innerHTML = `
       <span style="display:inline-flex;align-items:center;gap:.5rem">
-        <svg class="spin" width="16" height="16" viewBox="0 0 24 24" style="animation:spin 0.9s linear infinite">
+        <svg class="spin" width="16" height="16" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity="0.25"></circle>
           <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" fill="none"></path>
         </svg>
         ${runningText}
-      </span>
-    `;
-    try {
-      const out = await fn(...args);
-      btn.innerHTML = original;
-      btn.disabled = false;
-      return out;
-    } catch (e) {
-      btn.innerHTML = original;
-      btn.disabled = false;
-      throw e;
-    }
+      </span>`;
+    try { return await fn(...args); }
+    finally { btn.innerHTML = original; btn.disabled = false; }
   };
 }
-// inject minimal spinner + highlight CSS once
-(function injectSpinCSS(){
-  if (document.getElementById("spin-css")) return;
-  const s = document.createElement("style");
-  s.id = "spin-css";
-  s.textContent = `
-    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-    .green{background:rgba(0,128,96,.35)}
-    .red{background:rgba(128,0,32,.35)}
-    .compare-img{max-height:48px;max-width:80px;border-radius:6px}
-  `;
-  document.head.appendChild(s);
-})();
-
-// Toasts
-function toast(msg, type="info") {
+function toast(msg, type="ok") {
   let wrap = document.getElementById("toast-wrap");
   if (!wrap) {
     wrap = document.createElement("div");
     wrap.id = "toast-wrap";
-    wrap.style.cssText = "position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;";
+    // centered top; stacked
+    wrap.style.cssText = "position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none";
     document.body.appendChild(wrap);
   }
   const box = document.createElement("div");
   box.textContent = msg;
-  box.style.cssText =
-    "padding:10px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.35);font-weight:600;min-width:200px;" +
-    (type === "error"
-      ? "background:#4f1e27;color:#ffd7df;border:1px solid #9c2b3b;"
-      : "background:#12322b;color:#d9fff3;border:1px solid #2f8f7b;");
+  // green TEXT (not background) for normal; red text for error
+  box.style.cssText = "padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#0f1730;color:#22c55e;min-width:220px;text-align:center;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35)";
+  if (type === "error") { box.style.color="#ef4444"; }
   wrap.appendChild(box);
-  setTimeout(() => box.remove(), 2600);
+  setTimeout(() => { try{wrap.removeChild(box);}catch{} }, 2200);
 }
 
-// ---------------- Headers (now with Image after Praktis Code) ----------------
-function setHeadersAll() {
-  headRow = resetHead();
-  headRow.innerHTML = [
-    "Praktis Code",
-    "Image",                      // NEW
-    "Praktis Name",
-    "Praktis Price",
-    "Praktiker Price",
-    "MrBricolage Price",
-    "OnlineMashini Price",
-  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+// ---------------- Utils ----------------
+function resetHead(cols) {
+  thead.innerHTML = "";
+  const tr = document.createElement("tr");
+  tr.innerHTML = cols.map(h => `<th>${escapeHtml(h)}</th>`).join("");
+  thead.appendChild(tr);
 }
-function setHeadersPraktiker() {
-  headRow = resetHead();
-  headRow.innerHTML = [
-    "Praktis Code",
-    "Image",                      // NEW
-    "Praktiker Code",
-    "Praktis Name",
-    "Praktiker Name",
-    "Praktis Regular Price",
-    "Praktiker Regular Price",
-    "Praktis Promo Price",
-    "Praktiker Promo Price",
-  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+function imgTd(url) {
+  if (!url) return `<td>—</td>`;
+  return `<td><img src="${escapeHtml(url)}" alt="" loading="lazy" class="compare-img"></td>`;
 }
-function setHeadersMrBricolage() {
-  headRow = resetHead();
-  headRow.innerHTML = [
-    "Praktis Code",
-    "Image",                      // NEW
-    "MrBricolage Code",
-    "Praktis Name",
-    "MrBricolage Name",
-    "Praktis Regular Price",
-    "MrBricolage Regular Price",
-    "Praktis Promo Price",
-    "MrBricolage Promo Price",
-  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+const toNum = (v) => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s || s.toLowerCase() === "n/a" || s.toLowerCase() === "none") return null;
+  const n = Number(s.replace(/\s+/g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+};
+// Highlight: green = equal to min of available; red = above min; N/A ignored
+function classForValue(value, candidates) {
+  const v = toNum(value);
+  const nums = candidates.map(toNum).filter(n => n !== null);
+  if (v === null || nums.length === 0) return "";
+  const min = Math.min(...nums);
+  if (v === min) return "green";
+  if (v > min) return "red";
+  return "";
 }
-function setHeadersMashiniBg() {
-  headRow = resetHead();
-  headRow.innerHTML = [
-    "Praktis Code",
-    "Image",                      // NEW
-    "OnlineMashini Code",
-    "Praktis Name",
-    "OnlineMashini Name",
-    "Praktis Regular Price",
-    "OnlineMashini Regular Price",
-    "Praktis Promo Price",
-    "OnlineMashini Promo Price",
-  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+
+// ---- Matching-style brand helpers (exact same normalization) ----
+const normBrand = (s) => (s || "").toLowerCase().replace(/[.\s]/g, "");
+function currentBrandFilter() {
+  const raw = (brandSelect.value || brandInput.value || "").trim();
+  return raw;
+}
+function brandMatches(rowBrandRaw, filterRaw) {
+  const rowNorm = normBrand(rowBrandRaw);
+  const filtNorm = normBrand(filterRaw);
+  if (!filtNorm) return true;
+  if (!rowNorm) return false;            // only exclude if we actively filter
+  return rowNorm.includes(filtNorm);     // substring like in Matching
 }
 
 // ---------------- Data fetch ----------------
-async function fetchCompare({ site_code, limit, source = "snapshots", tag = null }) {
-  const params = new URLSearchParams();
-  params.set("site_code", site_code);
-  // IMPORTANT: use the user's compareLimit (backend validates)
-  params.set("limit", String(limit));
-  params.set("source", source);
-  if (tag && tag !== "all" && tag !== "") params.set("tag", tag);
-  const r = await fetch(`${API}/api/compare?${params.toString()}`);
-  if (!r.ok) throw new Error(`compare HTTP ${r.status}`);
-  return r.json();
-}
-async function postScrapeNow(site_code, limit) {
-  const r = await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(site_code)}&limit=${encodeURIComponent(limit)}`, {
-    method: "POST",
-  });
-  if (!r.ok) throw new Error(`scrape HTTP ${r.status}`);
-  return r.json();
+async function fetchBrands() {
+  try {
+    const r = await fetch(`${API}/api/products/brands`);
+    const brands = r.ok ? await r.json() : [];
+    brandSelect.innerHTML = "";
+    ensureBrandPlaceholder();
+    for (const b of brands) {
+      const o = document.createElement("option");
+      o.value = b; o.textContent = b;
+      brandSelect.appendChild(o);
+    }
+  } catch {
+    ensureBrandPlaceholder();
+  }
 }
 
-// ---------------- Assets (Praktis image + URL) ----------------
-function imgTd(url) {
-  if (!url) return `<td>—</td>`;
-  return `<td><img class="compare-img" src="${escapeHtml(url)}" alt="" loading="lazy"></td>`;
-}
 async function fetchAssetsForSkus(skus) {
   if (!skus?.length) return {};
   const qs = encodeURIComponent(skus.join(","));
   const r = await fetch(`${API}/api/products/assets?skus=${qs}`);
-  if (!r.ok) {
-    console.warn("assets fetch failed", await r.text());
-    return {};
-  }
+  if (!r.ok) { console.warn("assets fetch failed", await r.text()); return {}; }
   return r.json();
 }
 
-// ---------------- Highlight helpers ----------------
-const toNum = v => (Number.isFinite(Number(v)) ? Number(v) : null);
-function classForLowest(value, candidates) {
-  if (value == null || !Number.isFinite(value)) return ""; // don't color N/A
-  const nums = candidates.filter(v => v != null && Number.isFinite(v));
-  if (nums.length === 0) return "";
-  const min = Math.min(...nums);
-  return value === min ? "green" : "red"; // ties -> all green
+// IMPORTANT: follow Matching’s query param names: q, tag_id, brand
+async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null, brand=null, q=null }) {
+  const params = new URLSearchParams();
+  params.set("site_code", site_code);
+  params.set("limit", String(limit));
+  params.set("source", source);
+  if (tag_id && tag_id !== "all" && tag_id !== "") params.set("tag_id", tag_id);
+  if (brand && brand.trim()) params.set("brand", brand);
+  if (q && q.trim()) params.set("q", q.trim());
+  const r = await fetch(`${API}/api/compare?${params.toString()}`);
+  if (!r.ok) throw new Error(`compare HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---------------- Pivot (All sites) ----------------
+function pivotAll(flatRows) {
+  const map = new Map();
+  for (const r of flatRows) {
+    const sku = r.product_sku ?? "";
+    if (!sku) continue;
+    if (!map.has(sku)) {
+      map.set(sku, {
+        code: sku,
+        name: r.product_name ?? "N/A",
+        brand: r.product_brand || r.brand || null,   // ensure brand travels in payload
+        tags:  r.product_tags || r.tags || null,     // allow client tag fallback like Matching
+        praktis_price: toNum(r.product_price_regular),
+        praktiker_price: null, praktiker_url: null,
+        mrbricolage_price: null, mrbricolage_url: null,
+        mashinibg_price: null, mashinibg_url: null,
+      });
+    }
+    const agg = map.get(sku);
+    const site = (r.competitor_site || "").toLowerCase();
+    const compPrice = toNum(r.competitor_price_regular);
+    if (site.includes("praktiker")) {
+      agg.praktiker_price = compPrice;
+      agg.praktiker_url   = r.competitor_url || null;
+    } else if (site.includes("bricol")) {
+      agg.mrbricolage_price = compPrice;
+      agg.mrbricolage_url   = r.competitor_url || null;
+    } else if (site.includes("mashin") || site === "mashinibg") {
+      agg.mashinibg_price = compPrice;
+      agg.mashinibg_url   = r.competitor_url || null;
+    }
+  }
+  return Array.from(map.values());
+}
+
+// ---------------- Price status (for filters) ----------------
+function statusSingle(row) {
+  const our = toNum(row.product_price_regular);
+  const comp = toNum(row.competitor_price_regular);
+  if (our === null || comp === null) return "na";
+  if (our < comp) return "better";
+  if (our > comp) return "worse";
+  return "equal";
+}
+function statusAll(p) {
+  const our = toNum(p.praktis_price);
+  const comps = [p.praktiker_price, p.mrbricolage_price, p.mashinibg_price].filter(v => v !== null);
+  if (our === null || comps.length === 0) return "na";
+  const minComp = Math.min(...comps);
+  if (our < minComp) return "better";
+  if (our > minComp) return "worse";
+  return "equal";
 }
 
 // ---------------- Renderers ----------------
 function renderSingle(rows, site, assetsBySku) {
-  if (site === "praktiker") setHeadersPraktiker();
-  else if (site === "mrbricolage") setHeadersMrBricolage();
-  else if (site === "mashinibg") setHeadersMashiniBg();
-  else setHeadersPraktiker();
+  const headers = site === "praktiker" ? [
+      "Praktis Code","Image","Praktis Name","Praktiker Code","Praktiker Name",
+      "Praktis Regular Price","Praktiker Regular Price","Praktis Promo Price","Praktiker Promo Price",
+    ] : site === "mrbricolage" ? [
+      "Praktis Code","Image","Praktis Name","MrBricolage Code","MrBricolage Name",
+      "Praktis Regular Price","MrBricolage Regular Price","Praktis Promo Price","MrBricolage Promo Price",
+    ] : [
+      "Praktis Code","Image","Praktis Name","OnlineMashini Code","OnlineMashini Name",
+      "Praktis Regular Price","OnlineMashini Regular Price","Praktis Promo Price","OnlineMashini Promo Price",
+    ];
+  resetHead(headers);
 
   const html = rows.map(r => {
-    const ourReg = toNum(r.product_price_regular);
+    const ourReg   = toNum(r.product_price_regular);
     const theirReg = toNum(r.competitor_price_regular);
-    const clsOur  = classForLowest(ourReg,  [ourReg, theirReg]);
-    const clsComp = classForLowest(theirReg,[ourReg, theirReg]);
 
     const compName = r.competitor_name || "N/A";
     const compLink = r.competitor_url
@@ -246,216 +296,215 @@ function renderSingle(rows, site, assetsBySku) {
     const praktisUrl = asset.product_url || null;
     const praktisImg = asset.image_url || null;
 
+    const clsOur  = classForValue(ourReg,   [ourReg, theirReg]);
+    const clsComp = classForValue(theirReg, [ourReg, theirReg]);
+
     return `
       <tr>
         <td>${escapeHtml(r.product_sku ?? "")}</td>
-        ${imgTd(praktisImg)}                                                  <!-- NEW image cell -->
-        <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(r.product_name ?? "N/A")}</a>` : escapeHtml(r.product_name ?? "N/A")}</td> <!-- NEW link -->
+        ${imgTd(praktisImg)}
+        <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(r.product_name ?? "N/A")}</a>` : escapeHtml(r.product_name ?? "N/A")}</td>
         <td>${escapeHtml(r.competitor_sku ?? "")}</td>
         <td>${compLink}</td>
-        <td class="${clsOur}">${fmtPrice(r.product_price_regular)}</td>
-        <td class="${clsComp}">${fmtPrice(r.competitor_price_regular)}</td>
+        <td class="${clsOur}">${fmtPrice(ourReg)}</td>
+        <td class="${clsComp}">${fmtPrice(theirReg)}</td>
         <td>${fmtPrice(r.product_price_promo)}</td>
         <td>${fmtPrice(r.competitor_price_promo)}</td>
-      </tr>
-    `;
+      </tr>`;
   }).join("");
   tbody.innerHTML = html;
 }
 
-function renderAll(flatRows, assetsBySku) {
-  setHeadersAll();
+function renderAllPage(pivotPage, assetsBySku) {
+  resetHead([
+    "Praktis Code","Image","Praktis Name",
+    "Praktis Regular Price","Praktiker Regular Price","MrBricolage Regular Price","OnlineMashini Regular Price",
+  ]);
 
-  // Pivot by Praktis Code
-  const map = new Map();
-  for (const r of flatRows) {
-    const key = r.product_sku ?? "";
-    if (!key) continue;
-    if (!map.has(key)) {
-      map.set(key, {
-        code: key,
-        name: r.product_name ?? "N/A",
-        praktis_price: toNum(r.product_price_regular),
-        praktiker_price: null,
-        praktiker_url: null,
-        mrbricolage_price: null,
-        mrbricolage_url: null,
-        mashinibg_price: null,
-        mashinibg_url: null,
-      });
-    }
-    const agg = map.get(key);
+  const html = pivotPage.map(p => {
+    const allVals = [p.praktis_price, p.praktiker_price, p.mrbricolage_price, p.mashinibg_price];
+    const clsP   = classForValue(p.praktis_price, allVals);
+    const clsK   = classForValue(p.praktiker_price, allVals);
+    const clsM   = classForValue(p.mrbricolage_price, allVals);
+    const clsMash= classForValue(p.mashinibg_price, allVals);
 
-    if (agg.praktis_price == null && r.product_price_regular != null) {
-      agg.praktis_price = toNum(r.product_price_regular);
-    }
+    const asset = assetsBySku[p.code] || {};
+    const praktisUrl = asset.product_url || null;
+    const praktisImg = asset.image_url || null;
 
-    const site = (r.competitor_site || "").toLowerCase();
-    if (site.includes("praktiker")) {
-      if (r.competitor_price_regular != null) agg.praktiker_price = toNum(r.competitor_price_regular);
-      if (r.competitor_url) agg.praktiker_url = r.competitor_url;
-    } else if (site.includes("bricol")) {
-      if (r.competitor_price_regular != null) agg.mrbricolage_price = toNum(r.competitor_price_regular);
-      if (r.competitor_url) agg.mrbricolage_url = r.competitor_url;
-    } else if (site.includes("mashin") || site === "mashinibg") {
-      if (r.competitor_price_regular != null) agg.mashinibg_price = toNum(r.competitor_price_regular);
-      if (r.competitor_url) agg.mashinibg_url = r.competitor_url;
-    }
-  }
+    const cell = (price, url, cls) => {
+      const text = fmtPrice(price);
+      const inner = url ? `${text} <a href="${escapeHtml(url)}" target="_blank" rel="noopener">↗</a>` : text;
+      return `<td class="${cls}">${inner}</td>`;
+    };
 
-  // Convert to array for paging
-  const arr = Array.from(map.values());
-  return arr; // caller paginates and renders
+    return `
+      <tr>
+        <td>${escapeHtml(p.code)}</td>
+        ${imgTd(praktisImg)}
+        <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
+        ${cell(p.praktis_price,      null,            clsP)}
+        ${cell(p.praktiker_price,    p.praktiker_url, clsK)}
+        ${cell(p.mrbricolage_price,  p.mrbricolage_url, clsM)}
+        ${cell(p.mashinibg_price,    p.mashinibg_url, clsMash)}
+      </tr>`;
+  }).join("");
+  tbody.innerHTML = html;
 }
 
-// ---------------- Actions ----------------
-async function loadLatestCore(refetch = true) {
+// ---------------- Main load ----------------
+async function loadCore(refetch=true) {
   const site_code = siteSelect?.value || "all";
-  const tag = tagSelect?.value || "all";
-  const limitForBackend = Number(compareLimit?.value || 50); // IMPORTANT: use UI input; avoids 422
+  const limit     = Number(compareLimit?.value || 50);
 
-  if (refetch || site_code !== lastSite || tag !== lastTag) {
-    const data = await fetchCompare({ site_code, limit: limitForBackend, source: "snapshots", tag });
-    lastRows = data || [];
-    lastSite = site_code;
-    lastTag = tag;
-    page = 1; // reset to first page on any refetch
+  if (refetch || site_code !== lastSite || (tagFilter?.value ?? "") !== lastTag) {
+    const tagVal = tagFilter?.value ?? "";
+    const q      = (searchInput?.value || "").trim();
+    const brand  = currentBrandFilter();
+    // EXACTLY like Matching: send q, tag_id, brand
+    lastRows = await fetchCompare({ site_code, limit, source: "snapshots", tag_id: tagVal, brand, q }) || [];
+    lastSite = site_code; lastTag = tagVal; page = 1;
   }
+
+  const qText   = (searchInput?.value || "").trim().toLowerCase();
+  const brandRaw= currentBrandFilter();
+  const priceF  = (priceSelect?.value || "");
+  const selectedTag = tagFilter?.value ?? "";
 
   if (site_code === "all") {
-    // Build pivot list, then page it
-    const pivotArr = renderAll(lastRows, {}); // get array only; actual render happens below
-    const total = pivotArr.length;
-    const start = (page - 1) * PER_PAGE;
-    const end = start + PER_PAGE;
-    const pageSlice = pivotArr.slice(start, end);
-    const skus = pageSlice.map(p => p.code);
-    const assetsBySku = await fetchAssetsForSkus(skus);
+    let pivot = pivotAll(lastRows);
 
-    // Render this page
-    setHeadersAll();
-    const html = pageSlice.map(p => {
-      const values = [p.praktis_price, p.praktiker_price, p.mrbricolage_price, p.mashinibg_price];
-      const clsP = classForLowest(p.praktis_price, values);
-      const clsK = classForLowest(p.praktiker_price, values);
-      const clsM = classForLowest(p.mrbricolage_price, values);
-      const clsMash = classForLowest(p.mashinibg_price, values);
+    // Client-side tag filter fallback (only if rows carry tags)
+    if (selectedTag) {
+      pivot = pivot.filter(p => {
+        const tags = p.tags || [];
+        return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
+      });
+    }
 
-      const praktikerCell = p.praktiker_url
-        ? `${fmtPrice(p.praktiker_price)} <a href="${escapeHtml(p.praktiker_url)}" target="_blank" rel="noopener">↗</a>`
-        : fmtPrice(p.praktiker_price);
+    // Search text
+    if (qText) {
+      pivot = pivot.filter(p =>
+        (p.code || "").toLowerCase().includes(qText) ||
+        (p.name || "").toLowerCase().includes(qText)
+      );
+    }
 
-      const mrbricolageCell = p.mrbricolage_url
-        ? `${fmtPrice(p.mrbricolage_price)} <a href="${escapeHtml(p.mrbricolage_url)}" target="_blank" rel="noopener">↗</a>`
-        : fmtPrice(p.mrbricolage_price);
+    // Brand (substring, normalized)
+    if (brandRaw) {
+      pivot = pivot.filter(p => brandMatches(p.brand, brandRaw));
+    }
 
-      const mashiniCell = p.mashinibg_url
-        ? `${fmtPrice(p.mashinibg_price)} <a href="${escapeHtml(p.mashinibg_url)}" target="_blank" rel="noopener">↗</a>`
-        : fmtPrice(p.mashinibg_price);
+    // Price status
+    if (priceF) {
+      pivot = pivot.filter(p => statusAll(p) === priceF);
+    }
 
-      const asset = assetsBySku[p.code] || {};
-      const praktisUrl = asset.product_url || null;
-      const praktisImg = asset.image_url || null;
-
-      return `
-        <tr>
-          <td>${escapeHtml(p.code)}</td>
-          ${imgTd(praktisImg)}
-          <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
-          <td class="${clsP}">${fmtPrice(p.praktis_price)}</td>
-          <td class="${clsK}">${praktikerCell}</td>
-          <td class="${clsM}">${mrbricolageCell}</td>
-          <td class="${clsMash}">${mashiniCell}</td>
-        </tr>
-      `;
-    }).join("");
-    tbody.innerHTML = html;
-
-    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${pageSlice.length} of ${total})`;
+    // paginate + render
+    const total = pivot.length;
+    const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
+    const slice = pivot.slice(start, end);
+    const assets = await fetchAssetsForSkus(slice.map(p => p.code));
+    renderAllPage(slice, assets);
+    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   } else {
-    // Single site view: page raw rows directly
-    const total = lastRows.length;
-    const start = (page - 1) * PER_PAGE;
-    const end = start + PER_PAGE;
-    const pageSlice = lastRows.slice(start, end);
-    const skus = pageSlice.map(r => r.product_sku).filter(Boolean);
-    const assetsBySku = await fetchAssetsForSkus(skus);
-    renderSingle(pageSlice, site_code, assetsBySku);
-    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${pageSlice.length} of ${total})`;
+    let rows = lastRows.slice();
+
+    // Client-side tag filter fallback
+    if (selectedTag) {
+      rows = rows.filter(r => {
+        const tags = r.product_tags || r.tags || [];
+        return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
+      });
+    }
+
+    // Search text
+    if (qText) {
+      rows = rows.filter(r =>
+        [r.product_sku, r.product_name, r.product_barcode, r.competitor_sku, r.competitor_name]
+          .map(x => (x || "").toString().toLowerCase())
+          .some(s => s.includes(qText))
+      );
+    }
+
+    // Brand (same as Matching)
+    if (brandRaw) {
+      rows = rows.filter(r => brandMatches(r.product_brand || r.brand, brandRaw));
+    }
+
+    // Price status
+    if (priceF) {
+      rows = rows.filter(r => statusSingle(r) === priceF);
+    }
+
+    // paginate + render
+    const total = rows.length;
+    const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
+    const slice = rows.slice(start, end);
+    const assets = await fetchAssetsForSkus(slice.map(r => r.product_sku).filter(Boolean));
+    renderSingle(slice, site_code, assets);
+    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   }
 }
 
-const loadLatest = withSpinner(loadLatestBtn, "Loading…", async () => {
-  await loadLatestCore(true);
-  toast("Loaded latest data from DB");
-});
-const scrapeNow = withSpinner(scrapeNowBtn, "Scraping…", async () => {
-  const site_code = siteSelect?.value || "all";
-  const limit = Number(compareLimit?.value || 50); // keep using the field for scrapeNow too
-  await postScrapeNow(site_code, limit);
-  await loadLatestCore(true);
-  toast("Scrape finished");
-});
-
-// ---------------- Tags: mirror Matching behavior ----------------
-async function reloadTags() {
-  if (!tagSelect) return;
-  tagSelect.innerHTML = "";
-  ensureAllTagsOption();
-  try {
-    await loadTagsInto(tagSelect, siteSelect?.value);  // pass site where supported
-  } catch (e) {
-    try { await loadTagsInto(tagSelect); } catch {}
-  } finally {
-    ensureAllTagsOption();
-    if (!tagSelect.value) tagSelect.value = "all";
-  }
-}
-
-// ---------------- Init ----------------
+// ---------------- Init & Events ----------------
 async function init() {
-  // Sites
-  refreshSitesBtn?.addEventListener("click", () => loadSitesInto(siteSelect));
+  // Sites -> ensure "All sites" exists and is default (like you asked)
   await loadSitesInto(siteSelect);
-  ensureAllSitesOption();
-
-  // Reload on site change (like your Matching page does)
-  siteSelect?.addEventListener("change", async () => {
-    await reloadTags();
-    await loadLatestCore(true);
+  if (!siteSelect.querySelector('option[value="all"]')) {
+    const opt = document.createElement("option");
+    opt.value = "all"; opt.textContent = "All sites";
+    siteSelect.insertBefore(opt, siteSelect.firstChild);
+  }
+  siteSelect.value = "all";
+  siteSelect.addEventListener("change", () => { page = 1; loadCore(true); });
+  refreshSitesBtn?.addEventListener("click", async () => {
+    await loadSitesInto(siteSelect);
+    if (!siteSelect.querySelector('option[value="all"]')) {
+      const opt = document.createElement("option");
+      opt.value = "all"; opt.textContent = "All sites";
+      siteSelect.insertBefore(opt, siteSelect.firstChild);
+    }
   });
 
-  // Tags
-  await reloadTags();
-  tagSelect?.addEventListener("change", async () => {
-    await loadLatestCore(true);
-  });
-  refreshTagsBtn?.addEventListener("click", reloadTags);
+  // Tags — EXACTLY like Matching
+  await loadTagsInto(tagFilter, true);
+  tagFilter.addEventListener("change", () => { page = 1; loadCore(true); });
 
-  // Force the field to show 50 (as you wanted pages of 50)
+  // Brands — EXACTLY like Matching
+  await fetchBrands();
+  brandInput.addEventListener("input", () => { if (brandInput.value) brandSelect.value = ""; page = 1; loadCore(true); });
+  brandSelect.addEventListener("change", () => { if (brandSelect.value) brandInput.value = ""; page = 1; loadCore(true); });
+
+  // Search
+  let t; searchInput.addEventListener("input", () => {
+    clearTimeout(t); t = setTimeout(() => { page = 1; loadCore(false); }, 300);
+  });
+  searchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); page = 1; loadCore(false); }});
+
+  // Price status
+  priceSelect.addEventListener("change", () => { page = 1; loadCore(false); });
+
+  // Limit default (50 per page)
   if (compareLimit) compareLimit.value = "50";
 
-  // First load
-  await loadLatestCore(true);
+  // Buttons & pager — spinner + green-text toasts
+  const onLoadLatest = withSpinner(loadLatestBtn, "Loading…", async () => { await loadCore(true); toast("Loaded latest data from DB"); });
+  const onScrapeNow  = withSpinner(scrapeNowBtn,  "Scraping…", async () => {
+    const site_code = siteSelect.value || "all";
+    const limit = Number(compareLimit?.value || 50);
+    await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(site_code)}&limit=${encodeURIComponent(limit)}`, { method: "POST" });
+    await loadCore(true);
+    toast("Scrape finished");
+  });
 
-  // Buttons
-  loadLatestBtn?.addEventListener("click", async () => {
-    await loadLatestCore(true);
-  });
-  scrapeNowBtn?.addEventListener("click", scrapeNow);
+  loadLatestBtn?.addEventListener("click", () => { page = 1; onLoadLatest(); });
+  scrapeNowBtn?.addEventListener("click", () => { page = 1; onScrapeNow(); });
+  prevPageBtn?.addEventListener("click", () => { page = Math.max(1, page - 1); loadCore(false); });
+  nextPageBtn?.addEventListener("click", () => { page = page + 1; loadCore(false); });
 
-  // Pager buttons (if present)
-  prevPageBtn?.addEventListener("click", async () => {
-    page = Math.max(1, page - 1);
-    await loadLatestCore(false); // don’t refetch, just page the cached data
-  });
-  nextPageBtn?.addEventListener("click", async () => {
-    page = page + 1;
-    await loadLatestCore(false); // don’t refetch, just page the cached data
-  });
+  // First render
+  await loadCore(true);
 }
 
-init().catch(err => {
-  console.error("Comparison init failed:", err);
-  toast("Init failed", "error");
-});
+init().catch(e => { console.error("Comparison init failed:", e); toast("Init failed", "error"); });
