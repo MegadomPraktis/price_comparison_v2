@@ -118,6 +118,7 @@ function setHeadersAll() {
     "Praktis Price",
     "Praktiker Price",
     "MrBricolage Price",
+    "OnlineMashini Price",       // <-- NEW column after MrBricolage
   ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
 }
 function setHeadersPraktiker() {
@@ -144,6 +145,20 @@ function setHeadersMrBricolage() {
     "MrBricolage Regular Price",
     "Praktis Promo Price",
     "MrBricolage Promo Price",
+  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+}
+// NEW: headers for OnlineMashini (mashinibg)
+function setHeadersMashiniBg() {
+  headRow = resetHead();
+  headRow.innerHTML = [
+    "Praktis Code",
+    "OnlineMashini Code",
+    "Praktis Name",
+    "OnlineMashini Name",
+    "Praktis Regular Price",
+    "OnlineMashini Regular Price",
+    "Praktis Promo Price",
+    "OnlineMashini Promo Price",
   ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
 }
 
@@ -181,6 +196,7 @@ function classForLowest(value, candidates) {
 function renderSingle(rows, site) {
   if (site === "praktiker") setHeadersPraktiker();
   else if (site === "mrbricolage") setHeadersMrBricolage();
+  else if (site === "mashinibg") setHeadersMashiniBg();  // <-- NEW proper headers for mashinibg
   else setHeadersPraktiker();
 
   const html = rows.map(r => {
@@ -227,6 +243,8 @@ function renderAll(flatRows) {
         praktiker_url: null,
         mrbricolage_price: null,
         mrbricolage_url: null,
+        mashinibg_price: null,        // <-- NEW
+        mashinibg_url: null,          // <-- NEW
       });
     }
     const agg = map.get(key);
@@ -242,14 +260,18 @@ function renderAll(flatRows) {
     } else if (site.includes("bricol")) {
       if (r.competitor_price_regular != null) agg.mrbricolage_price = toNum(r.competitor_price_regular);
       if (r.competitor_url) agg.mrbricolage_url = r.competitor_url;
+    } else if (site.includes("mashin") || site === "mashinibg") { // <-- NEW detection
+      if (r.competitor_price_regular != null) agg.mashinibg_price = toNum(r.competitor_price_regular);
+      if (r.competitor_url) agg.mashinibg_url = r.competitor_url;
     }
   }
 
   const html = Array.from(map.values()).map(p => {
-    const values = [p.praktis_price, p.praktiker_price, p.mrbricolage_price];
+    const values = [p.praktis_price, p.praktiker_price, p.mrbricolage_price, p.mashinibg_price]; // <-- include mashinibg in highlight calc
     const clsP = classForLowest(p.praktis_price, values);
     const clsK = classForLowest(p.praktiker_price, values);
     const clsM = classForLowest(p.mrbricolage_price, values);
+    const clsMash = classForLowest(p.mashinibg_price, values); // <-- NEW
 
     const praktikerCell = p.praktiker_url
       ? `${fmtPrice(p.praktiker_price)} <a href="${escapeHtml(p.praktiker_url)}" target="_blank" rel="noopener">↗</a>`
@@ -259,6 +281,10 @@ function renderAll(flatRows) {
       ? `${fmtPrice(p.mrbricolage_price)} <a href="${escapeHtml(p.mrbricolage_url)}" target="_blank" rel="noopener">↗</a>`
       : fmtPrice(p.mrbricolage_price);
 
+    const mashiniCell = p.mashinibg_url
+      ? `${fmtPrice(p.mashinibg_price)} <a href="${escapeHtml(p.mashinibg_url)}" target="_blank" rel="noopener">↗</a>`
+      : fmtPrice(p.mashinibg_price);
+
     return `
       <tr>
         <td>${escapeHtml(p.code)}</td>
@@ -266,6 +292,7 @@ function renderAll(flatRows) {
         <td class="${clsP}">${fmtPrice(p.praktis_price)}</td>
         <td class="${clsK}">${praktikerCell}</td>
         <td class="${clsM}">${mrbricolageCell}</td>
+        <td class="${clsMash}">${mashiniCell}</td>   <!-- NEW cell -->
       </tr>
     `;
   }).join("");

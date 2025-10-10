@@ -59,11 +59,12 @@ def startup():
             session.add(CompetitorSite(code="mrbricolage", name="Mr. Bricolage", base_url="https://mr-bricolage.bg"))
             session.commit()
 
-        # # ✅ MashiniBG
-        # mash = session.execute(select(CompetitorSite).where(CompetitorSite.code == "mashinibg")).scalars().first()
-        # if not mash:
-        #     session.add(CompetitorSite(code="mashinibg", name="MashiniBG", base_url="https://www.onlinemashini.bg"))
-        #     session.commit()
+        # seed OnlineMashini (new)
+        mash = session.execute(select(CompetitorSite).where(CompetitorSite.code == "mashinibg")).scalars().first()
+        if not mash:
+            session.add(CompetitorSite(code="mashinibg", name="OnlineMashini", base_url="https://www.onlinemashini.bg"))
+            session.commit()
+
 
 @app.get("/", response_class=HTMLResponse)
 def root():
