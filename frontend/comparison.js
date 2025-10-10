@@ -1,368 +1,345 @@
+// comparison.js — tags like matching.js, strict headers, correct td highlights, spinners + toasts
 import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
+// ---------------- DOM ----------------
 const siteSelect = document.getElementById("siteSelect");
 const refreshSitesBtn = document.getElementById("refreshSites");
+
 const loadLatestBtn = document.getElementById("loadLatest");
 const scrapeNowBtn = document.getElementById("scrapeNow");
 const compareLimit = document.getElementById("compareLimit");
-const tbodyCompare = document.querySelector("#compareTable tbody");
-const tagFilter = document.getElementById("tagFilter");
 
-const ALL_VALUE = "__ALL__";
+const tagSelect = document.getElementById("tagSelect");          // tags dropdown
+const refreshTagsBtn = document.getElementById("refreshTags");   // ↻ Tags button
 
-let sitesCache = [];               // [{code, name}]
-let lastRows = [];                 // single-site cached rows
-let lastAllRows = [];              // all-sites merged rows
-let lastAllSiteOrder = [];         // order of competitor columns
+const table = document.getElementById("compareTable");
+const thead = table.querySelector("thead") || table.createTHead();
+let headRow = document.getElementById("compareHeadRow");
+if (!headRow) {
+  headRow = document.createElement("tr");
+  headRow.id = "compareHeadRow";
+  thead.appendChild(headRow);
+}
+const tbody = table.querySelector("tbody") || table.appendChild(document.createElement("tbody"));
 
-// ---------- bootstrap ----------
-init().catch(err => {
-  console.error("Comparison init failed:", err);
-  alert("Failed to initialize Comparison tab. See console for details.");
+// ---------------- Small UI helpers ----------------
+function ensureAllSitesOption() {
+  if (!siteSelect) return;
+  if (!siteSelect.querySelector('option[value="all"]')) {
+    const opt = document.createElement("option");
+    opt.value = "all";
+    opt.textContent = "All sites";
+    siteSelect.insertBefore(opt, siteSelect.firstChild);
+  }
+}
+function ensureAllTagsOption() {
+  if (!tagSelect) return;
+  if (!tagSelect.querySelector('option[value="all"]')) {
+    const opt = document.createElement("option");
+    opt.value = "all";
+    opt.textContent = "All tags";
+    tagSelect.insertBefore(opt, tagSelect.firstChild);
+  }
+}
+function resetHead() {
+  thead.innerHTML = "";
+  const row = document.createElement("tr");
+  row.id = "compareHeadRow";
+  thead.appendChild(row);
+  return row;
+}
+
+// Spinner inside a button
+function withSpinner(btn, runningText, fn) {
+  return async (...args) => {
+    if (!btn) return fn(...args);
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `
+      <span style="display:inline-flex;align-items:center;gap:.5rem">
+        <svg class="spin" width="16" height="16" viewBox="0 0 24 24" style="animation:spin 0.9s linear infinite">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity="0.25"></circle>
+          <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" fill="none"></path>
+        </svg>
+        ${runningText}
+      </span>
+    `;
+    try {
+      const out = await fn(...args);
+      btn.innerHTML = original;
+      btn.disabled = false;
+      return out;
+    } catch (e) {
+      btn.innerHTML = original;
+      btn.disabled = false;
+      throw e;
+    }
+  };
+}
+// inject minimal spinner + highlight CSS once
+(function injectSpinCSS(){
+  if (document.getElementById("spin-css")) return;
+  const s = document.createElement("style");
+  s.id = "spin-css";
+  s.textContent = `
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+    .green{background:rgba(0,128,96,.35)}
+    .red{background:rgba(128,0,32,.35)}
+  `;
+  document.head.appendChild(s);
+})();
+
+// Toasts
+function toast(msg, type="info") {
+  let wrap = document.getElementById("toast-wrap");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "toast-wrap";
+    wrap.style.cssText = "position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;";
+    document.body.appendChild(wrap);
+  }
+  const box = document.createElement("div");
+  box.textContent = msg;
+  box.style.cssText =
+    "padding:10px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.35);font-weight:600;min-width:200px;" +
+    (type === "error"
+      ? "background:#4f1e27;color:#ffd7df;border:1px solid #9c2b3b;"
+      : "background:#12322b;color:#d9fff3;border:1px solid #2f8f7b;");
+  wrap.appendChild(box);
+  setTimeout(() => box.remove(), 2600);
+}
+
+// ---------------- Headers (exact per spec) ----------------
+function setHeadersAll() {
+  headRow = resetHead();
+  headRow.innerHTML = [
+    "Praktis Code",
+    "Praktis Name",
+    "Praktis Price",
+    "Praktiker Price",
+    "MrBricolage Price",
+  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+}
+function setHeadersPraktiker() {
+  headRow = resetHead();
+  headRow.innerHTML = [
+    "Praktis Code",
+    "Praktiker Code",
+    "Praktis Name",
+    "Praktiker Name",
+    "Praktis Regular Price",
+    "Praktiker Regular Price",
+    "Praktis Promo Price",
+    "Praktiker Promo Price",
+  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+}
+function setHeadersMrBricolage() {
+  headRow = resetHead();
+  headRow.innerHTML = [
+    "Praktis Code",
+    "MrBricolage Code",
+    "Praktis Name",
+    "MrBricolage Name",
+    "Praktis Regular Price",
+    "MrBricolage Regular Price",
+    "Praktis Promo Price",
+    "MrBricolage Promo Price",
+  ].map(h => `<th>${escapeHtml(h)}</th>`).join("");
+}
+
+// ---------------- Data fetch ----------------
+async function fetchCompare({ site_code, limit, source = "snapshots", tag = null }) {
+  const params = new URLSearchParams();
+  params.set("site_code", site_code);
+  params.set("limit", String(limit || 200));
+  params.set("source", source);
+  if (tag && tag !== "all" && tag !== "") params.set("tag", tag); // same idea as matching
+  const r = await fetch(`${API}/api/compare?${params.toString()}`);
+  if (!r.ok) throw new Error(`compare HTTP ${r.status}`);
+  return r.json();
+}
+async function postScrapeNow(site_code, limit) {
+  const r = await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(site_code)}&limit=${encodeURIComponent(limit)}`, {
+    method: "POST",
+  });
+  if (!r.ok) throw new Error(`scrape HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---------------- Highlight helpers ----------------
+const toNum = v => (Number.isFinite(Number(v)) ? Number(v) : null);
+/** Lowest numeric => "green"; higher numeric => "red"; null/NaN => "" (no highlight). */
+function classForLowest(value, candidates) {
+  if (value == null || !Number.isFinite(value)) return ""; // don't color N/A
+  const nums = candidates.filter(v => v != null && Number.isFinite(v));
+  if (nums.length === 0) return "";
+  const min = Math.min(...nums);
+  return value === min ? "green" : "red"; // ties -> all green
+}
+
+// ---------------- Renderers ----------------
+function renderSingle(rows, site) {
+  if (site === "praktiker") setHeadersPraktiker();
+  else if (site === "mrbricolage") setHeadersMrBricolage();
+  else setHeadersPraktiker();
+
+  const html = rows.map(r => {
+    const ourReg = toNum(r.product_price_regular);
+    const theirReg = toNum(r.competitor_price_regular);
+    const clsOur  = classForLowest(ourReg,  [ourReg, theirReg]);
+    const clsComp = classForLowest(theirReg,[ourReg, theirReg]);
+
+    const compName = r.competitor_name || "N/A";
+    const compLink = r.competitor_url
+      ? `<a href="${escapeHtml(r.competitor_url)}" target="_blank" rel="noopener">${escapeHtml(compName)}</a>`
+      : escapeHtml(compName);
+
+    return `
+      <tr>
+        <td>${escapeHtml(r.product_sku ?? "")}</td>
+        <td>${escapeHtml(r.competitor_sku ?? "")}</td>
+        <td>${escapeHtml(r.product_name ?? "N/A")}</td>
+        <td>${compLink}</td>
+        <td class="${clsOur}">${fmtPrice(r.product_price_regular)}</td>
+        <td class="${clsComp}">${fmtPrice(r.competitor_price_regular)}</td>
+        <td>${fmtPrice(r.product_price_promo)}</td>
+        <td>${fmtPrice(r.competitor_price_promo)}</td>
+      </tr>
+    `;
+  }).join("");
+  tbody.innerHTML = html;
+}
+
+function renderAll(flatRows) {
+  setHeadersAll();
+
+  // Pivot by Praktis Code
+  const map = new Map();
+  for (const r of flatRows) {
+    const key = r.product_sku ?? "";
+    if (!key) continue;
+    if (!map.has(key)) {
+      map.set(key, {
+        code: key,
+        name: r.product_name ?? "N/A",
+        praktis_price: toNum(r.product_price_regular),
+        praktiker_price: null,
+        praktiker_url: null,
+        mrbricolage_price: null,
+        mrbricolage_url: null,
+      });
+    }
+    const agg = map.get(key);
+
+    if (agg.praktis_price == null && r.product_price_regular != null) {
+      agg.praktis_price = toNum(r.product_price_regular);
+    }
+
+    const site = (r.competitor_site || "").toLowerCase();
+    if (site.includes("praktiker")) {
+      if (r.competitor_price_regular != null) agg.praktiker_price = toNum(r.competitor_price_regular);
+      if (r.competitor_url) agg.praktiker_url = r.competitor_url;
+    } else if (site.includes("bricol")) {
+      if (r.competitor_price_regular != null) agg.mrbricolage_price = toNum(r.competitor_price_regular);
+      if (r.competitor_url) agg.mrbricolage_url = r.competitor_url;
+    }
+  }
+
+  const html = Array.from(map.values()).map(p => {
+    const values = [p.praktis_price, p.praktiker_price, p.mrbricolage_price];
+    const clsP = classForLowest(p.praktis_price, values);
+    const clsK = classForLowest(p.praktiker_price, values);
+    const clsM = classForLowest(p.mrbricolage_price, values);
+
+    const praktikerCell = p.praktiker_url
+      ? `${fmtPrice(p.praktiker_price)} <a href="${escapeHtml(p.praktiker_url)}" target="_blank" rel="noopener">↗</a>`
+      : fmtPrice(p.praktiker_price);
+
+    const mrbricolageCell = p.mrbricolage_url
+      ? `${fmtPrice(p.mrbricolage_price)} <a href="${escapeHtml(p.mrbricolage_url)}" target="_blank" rel="noopener">↗</a>`
+      : fmtPrice(p.mrbricolage_price);
+
+    return `
+      <tr>
+        <td>${escapeHtml(p.code)}</td>
+        <td>${escapeHtml(p.name)}</td>
+        <td class="${clsP}">${fmtPrice(p.praktis_price)}</td>
+        <td class="${clsK}">${praktikerCell}</td>
+        <td class="${clsM}">${mrbricolageCell}</td>
+      </tr>
+    `;
+  }).join("");
+
+  tbody.innerHTML = html;
+}
+
+// ---------------- Actions ----------------
+async function loadLatestCore() {
+  const site_code = siteSelect?.value || "all";
+  const limit = Number(compareLimit?.value || 200);
+  const tag = tagSelect?.value || null;  // identical handling to matching.js approach
+  const data = await fetchCompare({ site_code, limit, source: "snapshots", tag });
+  if (site_code === "all") renderAll(data);
+  else renderSingle(data, site_code);
+}
+const loadLatest = withSpinner(loadLatestBtn, "Loading…", async () => {
+  await loadLatestCore();
+  toast("Loaded latest data from DB");
+});
+const scrapeNow = withSpinner(scrapeNowBtn, "Scraping…", async () => {
+  const site_code = siteSelect?.value || "all";
+  const limit = Number(compareLimit?.value || 200);
+  await postScrapeNow(site_code, limit);
+  await loadLatestCore();
+  toast("Scrape finished");
 });
 
+// ---------------- Tags: mirror Matching behavior ----------------
+async function reloadTags() {
+  if (!tagSelect) return;
+  // keep "All tags" at the top
+  tagSelect.innerHTML = "";
+  ensureAllTagsOption();
+  try {
+    // Matching fills tags for the selected site; do the same.
+    // If your helper only takes (selectEl), the second arg will be ignored.
+    await loadTagsInto(tagSelect, siteSelect?.value);
+  } catch (e) {
+    // Fallback: try the one-arg variant if the above fails
+    try { await loadTagsInto(tagSelect); } catch {}
+  } finally {
+    // ensure "All tags" option remains and is the default
+    ensureAllTagsOption();
+    if (!tagSelect.value) tagSelect.value = "all";
+  }
+}
+
+// ---------------- Init ----------------
 async function init() {
-  // Populate sites and insert "All" as default
-  refreshSitesBtn.onclick = async () => {
-    await loadSitesList();
-    await loadLatest();
-  };
-  await loadSitesList();
+  // Sites
+  refreshSitesBtn?.addEventListener("click", () => loadSitesInto(siteSelect));
+  await loadSitesInto(siteSelect);
+  ensureAllSitesOption();
+  siteSelect.value = "all"; // default
 
-  // Tags
-  await loadTagsInto(tagFilter, true);
-
-  // Auto reload on changes
-  siteSelect.onchange = () => loadLatest();
-  tagFilter.onchange = () => loadLatest();
-
-  // Buttons
-  loadLatestBtn.onclick = () => loadLatest();
-  scrapeNowBtn.onclick  = () => scrapeNow();
+  // Tags (exactly like matching: load once, reload on site change, refresh button)
+  await reloadTags();
+  refreshTagsBtn?.addEventListener("click", reloadTags);
+  siteSelect?.addEventListener("change", async () => {
+    await reloadTags();        // reload tags for the new site
+    await loadLatestCore();    // then reload data
+  });
+  tagSelect?.addEventListener("change", loadLatestCore);
 
   // First load
-  await loadLatest();
+  await loadLatestCore();
+
+  // Buttons
+  loadLatestBtn?.addEventListener("click", loadLatest);
+  scrapeNowBtn?.addEventListener("click", scrapeNow);
 }
 
-// ---------- sites ----------
-async function loadSitesList() {
-  await loadSitesInto(siteSelect);
-
-  // Build cache from current options (display text is like "Praktiker (praktiker)")
-  sitesCache = [...siteSelect.querySelectorAll("option")]
-    .filter(o => o.value && o.value.trim().length > 0)
-    .map(o => ({ code: o.value, name: (o.textContent || "").replace(/\s*\(.*\)\s*$/, "") }));
-
-  // Ensure "All" exists and is default
-  if (![...siteSelect.options].some(o => o.value === ALL_VALUE)) {
-    const allOpt = document.createElement("option");
-    allOpt.value = ALL_VALUE;
-    allOpt.textContent = "All sites (all)";
-    siteSelect.insertBefore(allOpt, siteSelect.firstChild);
-  }
-  siteSelect.value = ALL_VALUE;
-}
-
-function getSiteName(code) {
-  return (sitesCache.find(s => s.code === code)?.name) || code;
-}
-
-function getSelectedSites() {
-  const val = siteSelect.value;
-  if (val === ALL_VALUE) {
-    return sitesCache.map(s => s.code); // every competitor
-  }
-  return [val];
-}
-
-// ---------- loading ----------
-async function loadLatest() {
-  try {
-    const codes = getSelectedSites();
-    const limit = compareLimit.value || "200";
-    const tagId = tagFilter.value || "";
-
-    if (!codes.length) {
-      clearBody();
-      setHeadersSingle("Praktiker"); // harmless placeholder
-      return;
-    }
-
-    if (siteSelect.value !== ALL_VALUE) {
-      // Single-site: keep original table shape
-      const code = codes[0];
-      const url = new URL(`${API}/api/compare`);
-      url.searchParams.set("site_code", code);
-      url.searchParams.set("limit", limit);
-      url.searchParams.set("source", "snapshots");
-      if (tagId) url.searchParams.set("tag_id", tagId);
-
-      const r = await fetch(url);
-      if (!r.ok) {
-        console.error("Load Latest failed:", r.status, await r.text());
-        alert("Load failed. See console for details.");
-        return;
-      }
-      const rows = await r.json();
-      lastRows = rows;
-      renderSingleSite(rows, getSiteName(code));
-      scrapeNowBtn.textContent = "Scrape Now";
-      return;
-    }
-
-    // All-sites: fetch each site in parallel and merge
-    const reqs = codes.map(code => {
-      const uri = new URL(`${API}/api/compare`);
-      uri.searchParams.set("site_code", code);
-      uri.searchParams.set("limit", limit);
-      uri.searchParams.set("source", "snapshots");
-      if (tagId) uri.searchParams.set("tag_id", tagId);
-      return { code, url: uri.toString() };
-    });
-
-    const results = await Promise.all(reqs.map(async ({ code, url }) => {
-      try {
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(await r.text());
-        return { code, rows: await r.json() };
-      } catch (e) {
-        console.warn("Load failed for", code, e);
-        return { code, rows: [] };
-      }
-    }));
-
-    const { rows: mergedRows, siteOrder } = mergeAllSites(results);
-    lastAllRows = mergedRows;
-    lastAllSiteOrder = siteOrder;
-    renderAllSites(mergedRows, siteOrder);
-    scrapeNowBtn.textContent = "Scrape Now (All)";
-  } catch (e) {
-    console.error("loadLatest error:", e);
-    alert("Load failed. See console for details.");
-  }
-}
-
-async function scrapeNow() {
-  const codes = getSelectedSites();
-  const limit = compareLimit.value || "200";
-
-  if (siteSelect.value !== ALL_VALUE) {
-    const code = codes[0];
-    const r = await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(code)}&limit=${encodeURIComponent(limit)}`, {
-      method: "POST"
-    });
-    if (!r.ok) {
-      console.error("Scrape failed:", r.status, await r.text());
-      alert("Scrape failed. See console for details.");
-      return;
-    }
-    const { written } = await r.json();
-    alert(`Scraped and saved ${written} snapshot(s) for ${getSiteName(code)}.`);
-    await loadLatest();
-    return;
-  }
-
-  // All-sites: do sequentially (gentler)
-  let total = 0;
-  for (const code of codes) {
-    try {
-      const r = await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(code)}&limit=${encodeURIComponent(limit)}`, {
-        method: "POST"
-      });
-      if (!r.ok) {
-        console.warn("Scrape failed for", code, await r.text());
-        continue;
-      }
-      const { written } = await r.json();
-      total += Number(written || 0);
-    } catch (e) {
-      console.warn("Scrape error for", code, e);
-    }
-  }
-  alert(`Scrape completed across all sites. Total snapshots saved: ${total}.`);
-  await loadLatest();
-}
-
-// ---------- single-site render (original 8 columns) ----------
-function renderSingleSite(rows, competitorName) {
-  setHeadersSingle(competitorName);
-  clearBody();
-
-  const tbody = tbodyCompare;
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    const hl = decideHighlight(row.product_price_regular, row.competitor_price_regular);
-
-    tr.innerHTML = `
-      <td>${row.product_sku ?? ""}</td>
-      <td>${row.competitor_sku ?? ""}</td>
-      <td>${escapeHtml(row.product_name ?? "")}</td>
-      <td>${
-        row.competitor_url
-          ? `<a href="${row.competitor_url}" target="_blank">${escapeHtml(row.competitor_name ?? "")}</a>`
-          : escapeHtml(row.competitor_name ?? "")
-      }</td>
-      <td class="${hl.oursLower ? 'green' : (hl.theirsLower ? 'red' : '')}" style="text-align:right;">${fmtPrice(row.product_price_regular)}</td>
-      <td class="${hl.theirsLower ? 'green' : (hl.oursLower ? 'red' : '')}" style="text-align:right;">${fmtPrice(row.competitor_price_regular)}</td>
-      <td style="text-align:right;">${fmtPrice(row.product_price_promo)}</td>
-      <td style="text-align:right;">${fmtPrice(row.competitor_price_promo)}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-// Defensive: (re)query the header row each time and guard against null
-function setHeadersSingle(competitorName) {
-  const headRow = document.getElementById("compareHeadRow");
-  if (!headRow) {
-    console.warn("#compareHeadRow not found in DOM.");
-    return;
-  }
-  headRow.innerHTML = `
-    <th>Praktis Code</th>
-    <th>${competitorName} Code</th>
-    <th>Praktis Name</th>
-    <th>${competitorName} Name</th>
-    <th>Praktis Regular Price</th>
-    <th>${competitorName} Regular Price</th>
-    <th>Praktis Promo Price</th>
-    <th>${competitorName} Promo Price</th>
-  `;
-}
-
-// ---------- all-sites render ----------
-function mergeAllSites(results) {
-  const bySku = new Map();
-  const siteOrder = results.map(r => r.code); // keep dropdown order
-
-  for (const { code, rows } of results) {
-    for (const row of rows) {
-      const sku = row.product_sku;
-      if (!sku) continue;
-
-      let rec = bySku.get(sku);
-      if (!rec) {
-        rec = {
-          product_sku: sku,
-          product_name: row.product_name ?? "",
-          praktis_price: normNum(row.product_price_regular),
-          competitors: {} // code -> { price, url }
-        };
-        bySku.set(sku, rec);
-      } else {
-        if (row.product_price_regular != null) {
-          rec.praktis_price = normNum(row.product_price_regular);
-        }
-        if (!rec.product_name && row.product_name) rec.product_name = row.product_name;
-      }
-
-      rec.competitors[code] = {
-        price: normNum(row.competitor_price_regular),
-        url: row.competitor_url || null
-      };
-    }
-  }
-
-  const mergedRows = [...bySku.values()].sort((a, b) => {
-    const A = String(a.product_sku), B = String(b.product_sku);
-    return A < B ? -1 : A > B ? 1 : 0;
-  });
-  return { rows: mergedRows, siteOrder };
-}
-
-function renderAllSites(rows, siteOrder) {
-  const headRow = document.getElementById("compareHeadRow");
-  if (!headRow) {
-    console.warn("#compareHeadRow not found in DOM.");
-    return;
-  }
-
-  // headers
-  headRow.innerHTML = "";
-  addTh(headRow, "Praktis Code");
-  addTh(headRow, "Praktis Name");
-  addTh(headRow, "Praktis Price");
-  for (const code of siteOrder) addTh(headRow, `${getSiteName(code)} Price`);
-
-  clearBody();
-  const tbody = tbodyCompare;
-
-  for (const r of rows) {
-    const tr = document.createElement("tr");
-
-    // find minimum among ours + competitors
-    const prices = [];
-    if (isFiniteNum(r.praktis_price)) prices.push(r.praktis_price);
-    for (const code of siteOrder) {
-      const p = r.competitors[code]?.price ?? null;
-      if (isFiniteNum(p)) prices.push(p);
-    }
-    const minPrice = prices.length ? Math.min(...prices) : null;
-
-    // Praktis Code
-    const tdSku = document.createElement("td");
-    tdSku.textContent = r.product_sku ?? "";
-    tr.appendChild(tdSku);
-
-    // Praktis Name
-    const tdName = document.createElement("td");
-    tdName.innerHTML = escapeHtml(r.product_name ?? "");
-    tr.appendChild(tdName);
-
-    // Praktis Price
-    const tdOur = document.createElement("td");
-    tdOur.style.textAlign = "right";
-    if (minPrice != null && r.praktis_price === minPrice) tdOur.className = "green";
-    tdOur.textContent = fmtPrice(r.praktis_price);
-    tr.appendChild(tdOur);
-
-    // Competitor columns
-    for (const code of siteOrder) {
-      const cell = document.createElement("td");
-      cell.style.textAlign = "right";
-      const entry = r.competitors[code] || null;
-      const price = entry?.price ?? null;
-      const url = entry?.url ?? null;
-
-      if (minPrice != null && price === minPrice) cell.className = "green";
-
-      const priceTxt = fmtPrice(price);
-      cell.innerHTML = url
-        ? `${priceTxt} <a href="${url}" target="_blank" class="link-btn" style="width:auto;padding:2px 6px;text-decoration:none;" title="Open product">🔗</a>`
-        : priceTxt;
-
-      tr.appendChild(cell);
-    }
-
-    tbody.appendChild(tr);
-  }
-}
-
-// ---------- small helpers ----------
-function addTh(headRow, label) {
-  const th = document.createElement("th");
-  th.textContent = label;
-  headRow.appendChild(th);
-}
-
-function clearBody() {
-  if (tbodyCompare) tbodyCompare.innerHTML = "";
-}
-
-function decideHighlight(our, their) {
-  const o = Number(our ?? NaN), t = Number(their ?? NaN);
-  if (Number.isFinite(o) && Number.isFinite(t)) {
-    return { oursLower: o < t, theirsLower: t < o };
-    }
-  return { oursLower: false, theirsLower: false };
-}
-
-function normNum(v) {
-  if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function isFiniteNum(n) {
-  return typeof n === "number" && Number.isFinite(n);
-}
+init().catch(err => {
+  console.error("Comparison init failed:", err);
+  toast("Init failed", "error");
+});
