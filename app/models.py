@@ -63,7 +63,7 @@ class PriceSnapshot(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     site_id: Mapped[int] = mapped_column(Integer, ForeignKey("competitor_sites.id"))
     competitor_sku: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    competitor_barcode: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)  # <-- NEW
+    competitor_barcode: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     promo_price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -77,6 +77,18 @@ class Tag(Base):
 
     # backref
     products = relationship("Product", secondary=ProductTag, back_populates="tags", lazy="selectin")
+
+# NEW: Praktis assets (URL + Image) stored separately from ERP products
+class ProductAsset(Base):
+    __tablename__ = "product_assets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(Integer, ForeignKey("products.id"), index=True, unique=True)
+    sku: Mapped[str] = mapped_column(String(64), index=True, unique=True)
+    product_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)  # ok / not_found / error
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_fetched: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 def select_sites():
     return select(CompetitorSite)

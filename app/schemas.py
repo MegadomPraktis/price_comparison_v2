@@ -81,3 +81,9 @@ class ComparisonRowOut(BaseModel):
     competitor_price_regular: Optional[float]
     competitor_price_promo: Optional[float]
     competitor_url: Optional[str]
+
+# NEW: assets
+class ProductAssetOut(BaseModel):
+  sku: str
+  product_url: Optional[str] = None
+  image_url: Optional[str] = None

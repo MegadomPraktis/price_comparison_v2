@@ -25,6 +25,24 @@ const prevPageBtn = document.getElementById("prevPage");
 const nextPageBtn = document.getElementById("nextPage");
 const autoMatchBtn = document.getElementById("autoMatch");
 
+/* =========================
+   NEW: Praktis assets (URL + Image) helpers
+   ========================= */
+function imgCell(url) {
+  if (!url) return `<td>—</td>`;
+  return `<td><img src="${escapeHtml(url)}" alt="" loading="lazy" style="max-height:48px;max-width:80px;border-radius:6px"/></td>`;
+}
+async function fetchAssetsForSkus(skus) {
+  if (!skus?.length) return {};
+  const qs = encodeURIComponent(skus.join(","));
+  const r = await fetch(`${API}/api/products/assets?skus=${qs}`);
+  if (!r.ok) {
+    console.warn("assets fetch failed", await r.text());
+    return {};
+  }
+  return r.json();
+}
+
 async function loadProducts() {
   const q = searchInput.value.trim();
   const url = new URL(`${API}/api/products`);
@@ -72,21 +90,29 @@ async function loadProducts() {
     if (r3.ok) tagsByProductId = await r3.json();
   }
 
-  renderMatchRows(products, matchesByProductId, tagsByProductId);
+  // 4) NEW: Praktis assets (image + PDP url) for visible SKUs
+  const skus = products.map(p => p.sku);
+  const assetsBySku = await fetchAssetsForSkus(skus);
+
+  renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku);
   pageInfo.textContent = `Page ${page} (rows: ${products.length})`;
 }
 
-function renderMatchRows(products, matchesByProductId, tagsByProductId) {
+function renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku = {}) {
   tbodyMatch.innerHTML = "";
   for (const p of products) {
     const m = matchesByProductId[p.id] || null;
     const prodTags = tagsByProductId[p.id] || [];
+    const asset = assetsBySku[p.sku] || null;
+    const praktisUrl = asset?.product_url || null;
+    const praktisImg = asset?.image_url || null;
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${p.sku}</td>
       <td>${p.barcode ?? ""}</td>
-      <td>${escapeHtml(p.name)}</td>
+      ${imgCell(praktisImg)}  <!-- NEW: image cell right after barcode -->
+      <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
       <td>
         <div style="display:flex; gap:6px; align-items:center;">
           <input placeholder="competitor SKU" class="comp-sku" value="${m?.competitor_sku ?? ""}" style="flex:1"/>

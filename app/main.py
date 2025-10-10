@@ -18,6 +18,7 @@ from app.routers import matching as r_matching
 from app.routers import comparison as r_comparison
 from app.routers import erp as r_erp
 from app.routers import tags as r_tags
+from app.routers import praktis_assets as r_assets   # <-- NEW
 from app.registry import register_default_scrapers
 
 app = FastAPI(title="Price Compare Service (MSSQL)", version="0.4.0")
@@ -29,6 +30,7 @@ app.add_middleware(
     allow_methods=["*"],
 )
 
+# Resolve frontend dir robustly (no more 404 for styles.css)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
@@ -39,15 +41,18 @@ app.include_router(r_matching.router, prefix="/api", tags=["matching"])
 app.include_router(r_comparison.router, prefix="/api", tags=["comparison"])
 app.include_router(r_erp.router, prefix="/api", tags=["erp"])
 app.include_router(r_tags.router, prefix="/api", tags=["tags"])
+app.include_router(r_assets.router, prefix="/api", tags=["praktis-assets"])  # <-- NEW
 
 @app.on_event("startup")
 def startup():
-    init_db()
+    # 1) Ensure tables exist
+    init_db()  # sync; creates tables if missing
+    # 2) Register scrapers
     register_default_scrapers()
+    # 3) Seed default site once
     from sqlalchemy import select
     from app.models import CompetitorSite
     with get_session() as session:
-        # Praktiker
         site = session.execute(select(CompetitorSite).where(CompetitorSite.code == "praktiker")).scalars().first()
         if not site:
             session.add(CompetitorSite(code="praktiker", name="Praktiker", base_url="https://praktiker.bg"))
