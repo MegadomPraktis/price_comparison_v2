@@ -1,196 +1,328 @@
-import { API, loadSitesInto } from "./shared.js";
+// email.js — rules CRUD (update vs create), per-rule send, tag name chips,
+// multi-select toggle, subscribers string for backend, normalized load.
 
-const $ = s => document.querySelector(s);
-const $$ = s => Array.from(document.querySelectorAll(s));
+import { API, escapeHtml } from "./shared.js";
 
-const tbl = $("#rulesTable tbody");
-const rec = $("#records");
-const dlg = $("#ruleDlg");
-const form = $("#ruleForm");
+const $  = (s,p=document)=>p.querySelector(s);
+const $$ = (s,p=document)=>Array.from(p.querySelectorAll(s));
 
-const f = {
-  name: $("#r_name"),
-  site: $("#r_site"),
-  tags: $("#r_tags"),
-  brand: $("#r_brand"),
-  subset: $("#r_subset"),
-  promo: $("#r_promo"),
-  subs: $("#r_subs"),
-  notes: $("#r_notes"),
-};
-
-let rules = [];
-let allTags = [];
-let editId = null;
-
-// ------- schedule ----------
-async function fetchSchedule() {
-  const r = await fetch(`${API}/api/email/schedule`);
-  return r.ok ? r.json() : {};
+// ---------- toasts ----------
+function toast(msg, ok=true){
+  let w = $("#toast-wrap");
+  if (!w) {
+    w = document.createElement("div");
+    w.id = "toast-wrap";
+    w.style.cssText = "position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none";
+    document.body.appendChild(w);
+  }
+  const d = document.createElement("div");
+  d.style.cssText = "padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#0f1730;min-width:220px;text-align:center;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35);";
+  d.style.color = ok ? "#22c55e" : "#ef4444";
+  d.textContent = msg;
+  w.appendChild(d);
+  setTimeout(()=>{ try{ w.removeChild(d);}catch{} }, 2400);
 }
-async function saveSchedule() {
-  const payload = {
-    mon: $("#sch_mon").value || null,
-    tue: $("#sch_tue").value || null,
-    wed: $("#sch_wed").value || null,
-    thu: $("#sch_thu").value || null,
-    fri: $("#sch_fri").value || null,
-    sat: $("#sch_sat").value || null,
-    sun: $("#sch_sun").value || null,
+
+// ---------- schedule ----------
+function readScheduleUI(){
+  const v = id => ($(id)?.value || "").trim() || null;
+  return {
+    mon: v("#sch_mon"), tue: v("#sch_tue"), wed: v("#sch_wed"),
+    thu: v("#sch_thu"), fri: v("#sch_fri"), sat: v("#sch_sat"), sun: v("#sch_sun"),
   };
-  const r = await fetch(`${API}/api/email/schedule`, {
-    method:"PUT", headers:{"Content-Type":"application/json"},
+}
+function putScheduleUI(s){
+  const set = (id,val)=>{ const el=$(id); if(!el) return; el.value = (val || ""); };
+  set("#sch_mon", s?.mon); set("#sch_tue", s?.tue); set("#sch_wed", s?.wed);
+  set("#sch_thu", s?.thu); set("#sch_fri", s?.fri); set("#sch_sat", s?.sat); set("#sch_sun", s?.sun);
+}
+async function loadSchedule(){
+  try{
+    const r = await fetch(`${API}/api/email/schedule`);
+    if (!r.ok) return;
+    putScheduleUI(await r.json());
+  }catch{}
+}
+async function saveSchedule(){
+  try{
+    const r = await fetch(`${API}/api/email/schedule`, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(readScheduleUI())
+    });
+    toast(r.ok ? "Schedule saved" : "Save failed", r.ok);
+  }catch{ toast("Save failed", false); }
+}
+
+// ---------- sites & tags ----------
+async function loadSitesInto(sel){
+  try{
+    const r = await fetch(`${API}/api/sites`);
+    const sites = r.ok ? await r.json() : [];
+    sel.innerHTML = `<option value="all">All competitors</option>`;
+    for(const s of sites){
+      const o = document.createElement("option");
+      o.value = s.code; o.textContent = s.name || s.code;
+      sel.appendChild(o);
+    }
+  }catch{ /* keep All */ }
+}
+
+let tagsMap = new Map();     // id -> name
+let tagsList = [];           // [{id,name}]
+
+async function loadTagsInto(sel){
+  try{
+    const r = await fetch(`${API}/api/tags`);
+    tagsList = r.ok ? await r.json() : [];
+    tagsMap = new Map(tagsList.map(t => [String(t.id), t.name]));
+    sel.innerHTML = "";
+    for(const t of tagsList){
+      const o = document.createElement("option");
+      o.value = String(t.id);
+      o.textContent = t.name;
+      sel.appendChild(o);
+    }
+  }catch{
+    sel.innerHTML = "";
+    tagsMap = new Map();
+    tagsList = [];
+  }
+}
+// click-to-toggle multi-select (no Ctrl/⌘)
+function enableMultiToggle(selectEl){
+  selectEl.addEventListener("mousedown", (e)=>{
+    if (e.target.tagName === "OPTION") {
+      e.preventDefault();
+      const opt = e.target;
+      opt.selected = !opt.selected;
+    }
+  });
+}
+const getMultiValues = (sel)=> Array.from(sel.selectedOptions).map(o=>o.value);
+
+// ---------- rules api ----------
+function normalizeRule(r){
+  // emails
+  let emailsArr = [];
+  if (Array.isArray(r.emails)) emailsArr = r.emails;
+  else if (Array.isArray(r.subscribers)) emailsArr = r.subscribers;
+  else if (typeof r.subscribers === "string") {
+    emailsArr = r.subscribers.split(",").map(s=>s.trim()).filter(Boolean);
+  } else if (typeof r.emails === "string") {
+    emailsArr = r.emails.split(",").map(s=>s.trim()).filter(Boolean);
+  }
+  // tags (ids)
+  let tagIds = [];
+  if (Array.isArray(r.tag_ids)) tagIds = r.tag_ids;
+  else if (Array.isArray(r.tags)) tagIds = r.tags.map(t => typeof t === "object" ? (t.id ?? t) : t);
+  // ensure strings for mapping
+  tagIds = tagIds.map(x => String(x));
+  return {
+    ...r,
+    _emails: emailsArr,
+    _tag_ids: tagIds
+  };
+}
+
+async function fetchRules(){
+  const r = await fetch(`${API}/api/email/rules`);
+  if (!r.ok) return [];
+  const list = await r.json();
+  return Array.isArray(list) ? list.map(normalizeRule) : [];
+}
+async function createRule(payload){
+  const r = await fetch(`${API}/api/email/rules`, {
+    method:"POST", headers:{ "Content-Type":"application/json" },
     body: JSON.stringify(payload)
   });
-  if (!r.ok) alert(await r.text());
+  if (!r.ok) throw new Error(await r.text().catch(()=>`HTTP ${r.status}`));
+  return r.json();
+}
+async function updateRule(id, payload){
+  const r = await fetch(`${API}/api/email/rules/${encodeURIComponent(id)}`, {
+    method:"PUT", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!r.ok) throw new Error(await r.text().catch(()=>`HTTP ${r.status}`));
+  return r.json();
+}
+async function deleteRule(id){
+  const r = await fetch(`${API}/api/email/rules/${encodeURIComponent(id)}`, { method:"DELETE" });
+  return r.ok;
+}
+async function sendOneRule(id){
+  // requires backend endpoint POST /api/email/send?rule_id={id}
+  const r = await fetch(`${API}/api/email/send?rule_id=${encodeURIComponent(id)}`, { method:"POST" });
+  return r.ok;
 }
 
-// ------- rules -----------
-async function fetchRules() {
-  const r = await fetch(`${API}/api/email/rules`);
-  rules = r.ok ? await r.json() : [];
-  render();
+// ---------- rules render ----------
+function tagsHtml(ids){
+  if (!ids?.length) return "-";
+  return ids.map(id => {
+    const name = tagsMap.get(String(id)) || id;
+    return `<span class="chip" title="Tag #${escapeHtml(String(id))}">${escapeHtml(String(name))}</span>`;
+  }).join(" ");
 }
-function render() {
-  const term = ($("#search").value || "").toLowerCase();
-  const rows = rules.filter(r =>
-    r.name.toLowerCase().includes(term) ||
-    (r.subscribers || "").toLowerCase().includes(term)
-  );
-  rec.textContent = `Records: ${rows.length}`;
-  tbl.innerHTML = rows.map(r => {
-    const t = (r.tag_ids || []).map(id => {
-      const tag = allTags.find(x => String(x.id) === String(id));
-      return `<span class="chip">${tag ? tag.name : id}</span>`;
-    }).join(" ");
-    return `
-      <tr>
-        <td>${r.name}</td>
-        <td>${t || "-"}</td>
-        <td>${r.only_promo ? "Yes" : "-"}</td>
-        <td>${r.site_code}</td>
-        <td>${r.subscribers}</td>
-        <td>${r.notes || ""}</td>
-        <td>${new Date(r.created_on).toLocaleString()}</td>
-        <td>
-          <button class="btn btn-outline" data-act="send" data-id="${r.id}">Send now</button>
-          <button class="btn" data-act="edit" data-id="${r.id}">Edit</button>
-          <button class="btn btn-red" data-act="del" data-id="${r.id}">Delete</button>
-        </td>
-      </tr>`;
+
+function renderRules(list){
+  const tbody = $("#rulesTable tbody");
+  const q = ($("#search")?.value || "").toLowerCase();
+
+  const filtered = list.filter(r=>{
+    if (!q) return true;
+    return [
+      r.name || "",
+      (r._emails || []).join(", "),
+      r.notes || "",
+      r.site_code || "",
+      r.price_subset || r.subset || "",
+      ...((r._tag_ids || []).map(id => tagsMap.get(String(id)) || String(id))),
+    ].join(" ").toLowerCase().includes(q);
+  });
+
+  $("#records").textContent = `Records: ${filtered.length}`;
+
+  tbody.innerHTML = filtered.map(r=>{
+    return `<tr>
+      <td>${escapeHtml(r.name || "")}</td>
+      <td>${tagsHtml(r._tag_ids)}</td>
+      <td>${r.promo_only ? "Yes" : "-"}</td>
+      <td>${escapeHtml(r.site_code || "all")}</td>
+      <td>${escapeHtml(r.price_subset || r.subset || "all")}</td>
+      <td>${escapeHtml((r._emails || []).join(", "))}</td>
+      <td>${escapeHtml(r.notes || "")}</td>
+      <td>${escapeHtml(r.created_on || "")}</td>
+      <td style="white-space:nowrap;display:flex;gap:6px">
+        <button class="btn btn-outline" data-send="${escapeHtml(String(r.id ?? ""))}">Send</button>
+        <button class="btn btn-outline" data-edit="${escapeHtml(String(r.id ?? ""))}">Edit</button>
+        <button class="btn btn-red" data-del="${escapeHtml(String(r.id ?? ""))}">Delete</button>
+      </td>
+    </tr>`;
   }).join("");
+
+  $$("button[data-del]").forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.getAttribute("data-del");
+      if (!id) return;
+      if (!confirm("Delete this rule?")) return;
+      const ok = await deleteRule(id);
+      toast(ok ? "Rule deleted" : "Delete failed", ok);
+      if (ok) initRules();
+    };
+  });
+  $$("button[data-edit]").forEach(b=>{
+    b.onclick = ()=>{
+      const id = b.getAttribute("data-edit");
+      const the = list.find(x => String(x.id) === String(id));
+      openDialog(the || null);
+    };
+  });
+  $$("button[data-send]").forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.getAttribute("data-send");
+      if (!id) return;
+      const old = b.textContent;
+      b.disabled = true; b.textContent = "Sending…";
+      try{
+        const ok = await sendOneRule(id);
+        toast(ok ? "Email queued" : "Send failed", ok);
+      }catch{ toast("Send failed", false); }
+      finally{ b.disabled = false; b.textContent = old; }
+    };
+  });
 }
 
-tbl.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-act]");
-  if (!btn) return;
-  const id = btn.dataset.id;
-  const act = btn.dataset.act;
-  if (act === "edit") openEdit(id);
-  if (act === "del") {
-    if (!confirm("Delete this rule?")) return;
-    const r = await fetch(`${API}/api/email/rules/${id}`, { method:"DELETE" });
-    if (!r.ok) return alert(await r.text());
-    await fetchRules();
-  }
-  if (act === "send") {
-    const r = await fetch(`${API}/api/email/send/${id}`, { method:"POST" });
-    if (!r.ok) return alert(await r.text());
-    alert("Email sent.");
-  }
-});
+// ---------- dialog ----------
+let editingId = null;
 
-// ------- dialog ----------
-function fillTagsSelect(selectedIds = []) {
-  f.tags.innerHTML = allTags
-    .map(t => `<option value="${t.id}" ${selectedIds.includes(t.id) ? "selected":""}>${t.name}</option>`)
-    .join("");
-}
+function openDialog(rule=null){
+  editingId = rule?.id ?? null;
+  $("#dlgTitle").textContent = rule ? "Edit rule" : "Add rule";
+  $("#r_name").value  = rule?.name || "";
+  $("#r_site").value  = rule?.site_code || "all";
+  $("#r_brand").value = rule?.brand || "";
+  $("#r_subset").value= (rule?.price_subset || rule?.subset || "all");
+  $("#r_promo").value = rule?.promo_only ? "1" : "0";
+  $("#r_subs").value  = (rule?._emails || []).join(", ");
+  $("#r_notes").value = rule?.notes || "";
 
-function openEdit(id=null) {
-  editId = id;
-  if (id) {
-    const r = rules.find(x => String(x.id) === String(id));
-    $("#dlgTitle").textContent = "Edit rule";
-    f.name.value = r.name || "";
-    f.site.value = r.site_code || "all";
-    fillTagsSelect((r.tag_ids || []).map(Number));
-    f.brand.value = r.brand || "";
-    f.subset.value = r.price_subset || "all";
-    f.promo.value = r.only_promo ? "1" : "0";
-    f.subs.value = r.subscribers || "";
-    f.notes.value = r.notes || "";
-  } else {
-    $("#dlgTitle").textContent = "Add rule";
-    form.reset();
-    f.site.value = "all"; f.subset.value = "all"; f.promo.value = "0";
-    fillTagsSelect([]);
-  }
-  dlg.showModal();
-}
+  const tagSel = $("#r_tags");
+  Array.from(tagSel.options).forEach(o => o.selected = false);
+  const existing = (rule?._tag_ids || []).map(t => String(t));
+  Array.from(tagSel.options).forEach(o => { if (existing.includes(o.value)) o.selected = true; });
 
-$("#dlgCancel").addEventListener("click", () => dlg.close());
+  $("#ruleDlg").showModal();
+  $("#dlgCancel").onclick = () => { $("#ruleDlg").close(); editingId = null; };
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const selectedTagIds = Array.from(f.tags.selectedOptions).map(o => Number(o.value));
-  const payload = {
-    name: f.name.value.trim(),
-    site_code: f.site.value,
-    tag_ids: selectedTagIds,
-    brand: f.brand.value.trim() || null,
-    price_subset: f.subset.value,
-    only_promo: f.promo.value === "1",
-    subscribers: f.subs.value.trim(),
-    notes: f.notes.value.trim() || null,
+  $("#dlgSave").onclick = async (e)=>{
+    e.preventDefault();
+    const name = $("#r_name").value.trim();
+    if (!name) { toast("Please enter a name", false); return; }
+
+    const subsString = ($("#r_subs").value || "").split(",").map(s=>s.trim()).filter(Boolean).join(", ");
+    if (!subsString) { toast("Please add at least one subscriber email", false); return; }
+
+    const tag_ids = getMultiValues($("#r_tags")).map(v => Number(v));
+    const emailsArr = subsString.split(",").map(s=>s.trim()).filter(Boolean);
+
+    const payload = {
+      name,
+      site_code: $("#r_site").value || "all",
+      brand: ($("#r_brand").value || "").trim() || null,
+      price_subset: $("#r_subset").value || "all",
+      promo_only: $("#r_promo").value === "1",
+      tag_ids,
+      subscribers: subsString,   // backend expects string
+      emails: emailsArr,         // optional, for downstream use
+      notes: ($("#r_notes").value || "").trim() || null
+    };
+
+    try{
+      if (editingId) await updateRule(editingId, payload);
+      else await createRule(payload);
+      toast("Rule saved");
+      $("#ruleDlg").close();
+      editingId = null;
+      initRules();
+    }catch(err){
+      console.error(err);
+      toast(`Save failed — ${err.message || "HTTP error"}`, false);
+    }
   };
-  const url = editId ? `${API}/api/email/rules/${editId}` : `${API}/api/email/rules`;
-  const method = editId ? "PUT" : "POST";
-  const r = await fetch(url, { method, headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-  if (!r.ok) return alert(await r.text());
-  dlg.close();
-  await fetchRules();
-});
+}
 
-// ------- buttons ----------
-$("#btnAdd").addEventListener("click", () => openEdit(null));
-$("#btnSaveSchedule").addEventListener("click", async () => {
-  await saveSchedule(); alert("Schedule saved");
-});
-$("#btnSendAll").addEventListener("click", async () => {
-  const r = await fetch(`${API}/api/email/send-all`, { method:"POST" });
-  if (!r.ok) return alert(await r.text());
-  alert("All rules sent.");
-});
-$("#search").addEventListener("input", render);
+// ---------- manual send-all ----------
+async function sendAll(){
+  const btn = $("#btnSendAll");
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "Sending…";
+  try{
+    const r = await fetch(`${API}/api/email/send-all`, { method:"POST" });
+    toast(r.ok ? "Send triggered" : "Send failed", r.ok);
+  }catch{ toast("Send failed", false); }
+  finally{ btn.disabled = false; btn.textContent = old; }
+}
 
-// ------- init ----------
-(async function init(){
-  // sites
-  await loadSitesInto(f.site);
-  if (!f.site.querySelector('option[value="all"]')) {
-    const o = document.createElement("option");
-    o.value = "all"; o.textContent = "All competitors";
-    f.site.insertBefore(o, f.site.firstChild);
-  }
-  f.site.value = "all";
+// ---------- init ----------
+async function initRules(){
+  try{ renderRules(await fetchRules()); }
+  catch(e){ console.error(e); renderRules([]); }
+}
 
-  // tags
-  try {
-    const r = await fetch(`${API}/api/tags`);
-    allTags = r.ok ? await r.json() : [];
-  } catch { allTags = []; }
-  fillTagsSelect([]);
+async function init(){
+  await loadSchedule();
+  $("#btnSaveSchedule").onclick = saveSchedule;
+  $("#btnSendAll").onclick = sendAll;
 
-  // schedule
-  const sch = await fetchSchedule();
-  $("#sch_mon").value = sch.mon || "";
-  $("#sch_tue").value = sch.tue || "";
-  $("#sch_wed").value = sch.wed || "";
-  $("#sch_thu").value = sch.thu || "";
-  $("#sch_fri").value = sch.fri || "";
-  $("#sch_sat").value = sch.sat || "";
-  $("#sch_sun").value = sch.sun || "";
+  await loadSitesInto($("#r_site"));
+  await loadTagsInto($("#r_tags"));
+  enableMultiToggle($("#r_tags"));
 
-  await fetchRules();
-})();
+  $("#btnAdd").onclick = ()=> openDialog(null);
+  $("#search").oninput = ()=> initRules();
+
+  await initRules();
+}
+
+init();

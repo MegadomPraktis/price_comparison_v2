@@ -34,6 +34,10 @@
 
     .chips{ display:flex; flex-wrap:wrap; gap:6px; }
     .chip{ padding:2px 8px; border:1px solid var(--border); border-radius:12px; background:#0e1831; font-size:12px; }
+    /* toasts */
+    #toast-wrap{ position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none }
+    .toast{ padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#0f1730;min-width:220px;text-align:center;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35) }
+    .toast.ok{ color:#22c55e } .toast.err{ color:#ef4444 }
   </style>
 </head>
 <body>
@@ -49,13 +53,13 @@
         </thead>
         <tbody>
           <tr>
-            <td><input id="sch_mon" placeholder="10:00"></td>
-            <td><input id="sch_tue" placeholder="10:00"></td>
-            <td><input id="sch_wed" placeholder="10:00"></td>
-            <td><input id="sch_thu" placeholder="10:00"></td>
-            <td><input id="sch_fri" placeholder="10:00"></td>
-            <td><input id="sch_sat" placeholder="-"></td>
-            <td><input id="sch_sun" placeholder="-"></td>
+            <td><input id="sch_mon" type="time" placeholder="10:00"></td>
+            <td><input id="sch_tue" type="time" placeholder="10:00"></td>
+            <td><input id="sch_wed" type="time" placeholder="10:00"></td>
+            <td><input id="sch_thu" type="time" placeholder="10:00"></td>
+            <td><input id="sch_fri" type="time" placeholder="10:00"></td>
+            <td><input id="sch_sat" type="time" placeholder="-"></td>
+            <td><input id="sch_sun" type="time" placeholder="-"></td>
           </tr>
         </tbody>
       </table>
@@ -84,6 +88,7 @@
             <th>Tags</th>
             <th>Promo only</th>
             <th>Competitor group</th>
+            <th>Price subset</th>
             <th>Subscribers</th>
             <th>Notes</th>
             <th>Created on</th>
@@ -115,6 +120,7 @@
         <label>Price subset
           <select id="r_subset">
             <option value="all">All items</option>
+            <option value="ours_lower">Only ours lower</option>
             <option value="ours_higher">Only ours higher</option>
             <option value="changed">Only changed (coming soon)</option>
           </select>
@@ -142,6 +148,7 @@
     </form>
   </dialog>
 
+  <div id="toast-wrap"></div>
   <script type="module" src="email.js"></script>
 </body>
 </html>
