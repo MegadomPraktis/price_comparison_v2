@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Email notifications</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    :root{ --cell-b: #1b2542; }
+    table{ border-collapse:collapse; }
+    th,td{ border:1px solid var(--border); padding:8px; vertical-align:middle; }
+    thead th{ background:#0f1b38; }
+    .toolbar{ display:flex; gap:8px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+    .btn{ padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:#10172a; color:#fff; cursor:pointer; }
+    .btn-green{ background:#16a34a; }
+    .btn-red{ background:#dc2626; }
+    .btn-outline{ background:#0f1730; color:#cfd6e4; }
+    .muted{ color:#8aa0c6; font-size:12px; }
+
+    /* schedule */
+    .schedule-table{ max-width: 720px; table-layout:fixed; }
+    .schedule-table th, .schedule-table td{ text-align:center; width:calc(720px/7); }
+    .schedule-table input{
+      width:100%; box-sizing:border-box; padding:6px 8px; background:#0b1226; border:1px solid var(--border); color:#e6ebf5; border-radius:6px;
+    }
+
+    /* dialog */
+    dialog{ border:none; border-radius:12px; background:#0b1226; color:#e6ebf5; padding:16px 18px; }
+    dialog::backdrop{ background:rgba(0,0,0,.6); }
+    form label{ display:flex; flex-direction:column; gap:6px; font-size:14px; }
+    input, select, textarea{
+      background:#0b1226; border:1px solid var(--border); color:#e6ebf5; border-radius:6px; padding:6px 8px;
+    }
+
+    .chips{ display:flex; flex-wrap:wrap; gap:6px; }
+    .chip{ padding:2px 8px; border:1px solid var(--border); border-radius:12px; background:#0e1831; font-size:12px; }
+  </style>
+</head>
+<body>
+  <header class="header"><h2 class="title">Email notifications</h2></header>
+
+  <div class="container">
+    <!-- Schedule -->
+    <section>
+      <h4>Schedule</h4>
+      <table class="schedule-table">
+        <thead>
+          <tr><th>Monday</th><th>Tuesday</th><th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th><th>Sunday</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><input id="sch_mon" placeholder="10:00"></td>
+            <td><input id="sch_tue" placeholder="10:00"></td>
+            <td><input id="sch_wed" placeholder="10:00"></td>
+            <td><input id="sch_thu" placeholder="10:00"></td>
+            <td><input id="sch_fri" placeholder="10:00"></td>
+            <td><input id="sch_sat" placeholder="-"></td>
+            <td><input id="sch_sun" placeholder="-"></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="toolbar">
+        <button class="btn btn-green" id="btnSaveSchedule">Save schedule</button>
+        <button class="btn btn-outline" id="btnSendAll">Send ALL now</button>
+      </div>
+    </section>
+
+    <!-- Rules -->
+    <section style="margin-top:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <h4 style="margin:0">Notification rules</h4>
+        <button class="btn btn-green" id="btnAdd">+ Add</button>
+      </div>
+
+      <div class="toolbar">
+        <input id="search" placeholder="Search name/email…">
+        <span id="records" class="muted"></span>
+      </div>
+
+      <table class="table" id="rulesTable">
+        <thead>
+          <tr>
+            <th style="width:220px">Name</th>
+            <th>Tags</th>
+            <th>Promo only</th>
+            <th>Competitor group</th>
+            <th>Subscribers</th>
+            <th>Notes</th>
+            <th>Created on</th>
+            <th style="width:180px">*</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+
+  <!-- Add/Edit dialog -->
+  <dialog id="ruleDlg">
+    <form method="dialog" id="ruleForm" style="min-width:680px">
+      <h3 id="dlgTitle">Add rule</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label>Name <input id="r_name" required></label>
+        <label>Site / Group
+          <select id="r_site">
+            <option value="all">All competitors</option>
+          </select>
+        </label>
+
+        <label>Tags (multi)
+          <select id="r_tags" multiple size="6" style="height:120px"></select>
+        </label>
+        <label>Brand <input id="r_brand" placeholder="optional"></label>
+
+        <label>Price subset
+          <select id="r_subset">
+            <option value="all">All items</option>
+            <option value="ours_higher">Only ours higher</option>
+            <option value="changed">Only changed (coming soon)</option>
+          </select>
+        </label>
+        <label>Promo only
+          <select id="r_promo">
+            <option value="0">No</option>
+            <option value="1">Yes</option>
+          </select>
+        </label>
+
+        <label style="grid-column:1/-1">Subscribers (comma separated)
+          <input id="r_subs" placeholder="a@b.com, c@d.com" required>
+        </label>
+
+        <label style="grid-column:1/-1">Notes
+          <textarea id="r_notes" rows="2"></textarea>
+        </label>
+      </div>
+
+      <div class="toolbar" style="justify-content:flex-end;margin-top:10px">
+        <button class="btn btn-outline" id="dlgCancel" type="button">Cancel</button>
+        <button class="btn btn-green" id="dlgSave" value="default">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="email.js"></script>
+</body>
+</html>

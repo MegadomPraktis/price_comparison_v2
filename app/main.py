@@ -19,6 +19,8 @@ from app.routers import comparison as r_comparison
 from app.routers import erp as r_erp
 from app.routers import tags as r_tags
 from app.routers import praktis_assets as r_assets   # <-- NEW
+from app.routers import email as r_email
+from app.routers import export as r_export
 from app.registry import register_default_scrapers
 
 app = FastAPI(title="Price Compare Service (MSSQL)", version="0.4.0")
@@ -42,6 +44,8 @@ app.include_router(r_comparison.router, prefix="/api", tags=["comparison"])
 app.include_router(r_erp.router, prefix="/api", tags=["erp"])
 app.include_router(r_tags.router, prefix="/api", tags=["tags"])
 app.include_router(r_assets.router, prefix="/api", tags=["praktis-assets"])  # <-- NEW
+app.include_router(r_email.router, prefix="/api", tags=["email"])
+app.include_router(r_export.router, prefix="/api", tags=["export"])
 
 @app.on_event("startup")
 def startup():

@@ -446,6 +446,35 @@ async function loadCore(refetch=true) {
     if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   }
 }
+function exportViaBackend() {
+  const site_code = siteSelect?.value || "all";
+  const tag_id    = (tagFilter?.value || "").trim();
+
+  const q   = (document.getElementById("searchInput")?.value || "").trim();
+  const bt  = (document.getElementById("brandInput")?.value || "").trim();
+  const bs  = (document.getElementById("brandSelect")?.value || "").trim();
+  const brand = bs || bt;
+
+  const price = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
+  const price_status = price === "better" ? "ours_lower" : price === "worse" ? "ours_higher" : "";
+
+  const per_page = 50;                                 // current page size
+  const params = new URLSearchParams();
+  params.set("site_code", site_code);
+  params.set("limit", "2000");                         // <= /api/compare cap to avoid 422
+  params.set("source", "snapshots");
+  if (tag_id) params.set("tag_id", tag_id);
+  if (q) params.set("q", q);
+  if (brand) params.set("brand", brand);
+  if (price_status) params.set("price_status", price_status);
+  if (typeof page !== "undefined") params.set("page", String(page));
+  params.set("per_page", String(per_page));
+
+  window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
+}
+
+(document.getElementById("exportExcel") || document.querySelector("[data-export], .export"))
+  ?.addEventListener("click", exportViaBackend);
 
 // ---------------- Init & Events ----------------
 async function init() {

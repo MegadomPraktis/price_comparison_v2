@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 from sqlalchemy import (
-    Integer, String, Float, DateTime, ForeignKey, UniqueConstraint, Text, Index, select, Table, Column
+    Integer, String, Float, DateTime, ForeignKey, UniqueConstraint, Text, Index, select, Table, Column, JSON
 )
+from sqlalchemy import JSON, Boolean, DateTime, Enum as SAEnum
+import enum
 from sqlalchemy.orm import relationship, Mapped, mapped_column
+from datetime import datetime
+from sqlalchemy import Boolean
 from app.db import Base
+import enum
+
+from typing import List, Dict, Any, Optional
 
 # --- NEW: ProductTag association table (many-to-many)
 from sqlalchemy import MetaData
@@ -91,6 +98,46 @@ class ProductAsset(Base):
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)  # ok / not_found / error
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_fetched: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+class PriceSubset(str, enum.Enum):
+    all = "all"             # all matched items
+    changed = "changed"     # price changed vs last snapshot (server calculates)
+    ours_higher = "ours_higher"  # our price higher than competitor
+
+class EmailRule(Base):
+    __tablename__ = "email_rules"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+
+    # Filters
+    tag_ids = Column(JSON, nullable=True)          # list[int]
+    brand = Column(String(255), nullable=True)
+    site_code = Column(String(64), nullable=False, default="all")  # "all" or a competitor code
+    price_subset = Column(SAEnum(PriceSubset), nullable=False, default=PriceSubset.all)
+    only_promo = Column(Boolean, nullable=False, default=False)
+
+    # Recipients & notes
+    subscribers = Column(Text, nullable=False)     # comma-separated emails
+    notes = Column(Text, nullable=True)
+
+    # Audit
+    created_by = Column(String(255), nullable=True)
+    created_on = Column(DateTime, nullable=False, default=datetime.utcnow)
+    modified_by = Column(String(255), nullable=True)
+    modified_on = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class EmailWeeklySchedule(Base):
+    """
+    Weekly schedule (local times in HH:MM; '-' or None disables a day).
+    Example: {"mon":"10:00","tue":"10:00","wed":"10:00","thu":"10:00","fri":"10:00","sat":null,"sun":null}
+    """
+    __tablename__ = "email_weekly_schedule"
+    id = Column(Integer, primary_key=True)
+    data = Column(JSON, nullable=False, default={
+        "mon": "10:00", "tue": "10:00", "wed": "10:00", "thu": "10:00", "fri": "10:00", "sat": None, "sun": None
+    })
+    # next_run_at is optional; scheduler computes each minute
+    next_run_at = Column(DateTime, nullable=True)
 
 def select_sites():
     return select(CompetitorSite)

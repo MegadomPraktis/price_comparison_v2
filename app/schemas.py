@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field, ConfigDict
+from datetime import datetime
+from enum import Enum
+
 
 class SiteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -90,3 +93,37 @@ class ProductAssetOut(BaseModel):
   sku: str
   product_url: Optional[str] = None
   image_url: Optional[str] = None
+
+
+class PriceSubset(str, Enum):
+    all = "all"
+    changed = "changed"
+    ours_higher = "ours_higher"
+
+class EmailRuleIn(BaseModel):
+    name: str
+    tag_ids: List[int] | None = None
+    brand: str | None = None
+    site_code: str = "all"
+    price_subset: PriceSubset = PriceSubset.all
+    only_promo: bool = False
+    subscribers: str = Field(..., description="Comma-separated emails")
+    notes: str | None = None
+
+class EmailRuleOut(EmailRuleIn):
+    id: int
+    created_by: str | None = None
+    created_on: datetime
+    modified_by: str | None = None
+    modified_on: datetime
+    class Config:
+        orm_mode = True
+
+class WeeklySchedule(BaseModel):
+    mon: str | None = "10:00"
+    tue: str | None = "10:00"
+    wed: str | None = "10:00"
+    thu: str | None = "10:00"
+    fri: str | None = "10:00"
+    sat: str | None = None
+    sun: str | None = None
