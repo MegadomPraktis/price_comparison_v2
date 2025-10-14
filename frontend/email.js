@@ -45,8 +45,9 @@ async function loadSchedule(){
 }
 async function saveSchedule(){
   try{
+    // use PUT; backend also accepts POST for compatibility
     const r = await fetch(`${API}/api/email/schedule`, {
-      method:"POST", headers:{ "Content-Type":"application/json" },
+      method:"PUT", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify(readScheduleUI())
     });
     toast(r.ok ? "Schedule saved" : "Save failed", r.ok);
@@ -151,8 +152,8 @@ async function deleteRule(id){
   return r.ok;
 }
 async function sendOneRule(id){
-  // requires backend endpoint POST /api/email/send?rule_id={id}
-  const r = await fetch(`${API}/api/email/send?rule_id=${encodeURIComponent(id)}`, { method:"POST" });
+  // path-param endpoint (backend also has query compat)
+  const r = await fetch(`${API}/api/email/send/${encodeURIComponent(id)}`, { method:"POST" });
   return r.ok;
 }
 
@@ -273,8 +274,8 @@ function openDialog(rule=null){
       price_subset: $("#r_subset").value || "all",
       promo_only: $("#r_promo").value === "1",
       tag_ids,
-      subscribers: subsString,   // backend expects string
-      emails: emailsArr,         // optional, for downstream use
+      subscribers: subsString,
+      emails: emailsArr,
       notes: ($("#r_notes").value || "").trim() || null
     };
 
