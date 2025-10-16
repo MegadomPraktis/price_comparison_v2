@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-from typing import List, Optional
+import asyncio, time
+
+from typing import List, Optional, Tuple, Set, Dict, Any
 from sqlalchemy.orm import aliased
 from datetime import datetime
 from sqlalchemy import select, func, and_, exists
 
 from app.models import Product, Match, CompetitorSite, PriceSnapshot, ProductTag
 from app.schemas import MatchOut, MatchCreate
-from app.scrapers.base import BaseScraper
+from app.scrapers.base import BaseScraper, SearchResult
+
 
 def list_products_simple(session, page: int, page_size: int, q: Optional[str], tag_id: Optional[int] = None) -> List[Product]:
     stmt = select(Product).order_by(Product.id.desc())
@@ -88,47 +91,140 @@ def create_or_update_match(session, payload: MatchCreate) -> MatchOut:
         competitor_name=None, competitor_url=None
     )
 
-async def auto_match_for_site(session, scraper: BaseScraper, limit: int = 100) -> tuple[int, int]:
+async def auto_match_for_site(session, scraper: BaseScraper, limit: Optional[int] = None) -> Tuple[int, int]:
+    """
+    Auto-match using each scraper's own lightweight search logic.
+    - OnlineMashini: prefer item_number (+brand), fallback to barcode; if no SKU is discoverable, store our item_number as competitor_sku.
+    - Others: prefer barcode.
+    Runs lookups concurrently; DB writes happen in batches.
+    """
     site = get_site(session, scraper.site_code)
-    sub = select(Match.product_id).where(Match.site_id == site.id)
-    stmt = (
-        select(Product)
-        .where(Product.id.not_in(sub))
-        .order_by(Product.id.desc()).limit(limit)
-    )
 
-    # Prefer barcode for others; for Mashini prefer item_number
-    res = session.execute(stmt)
-    products = res.scalars().all()
+    # Concurrency & batching
+    PAR = 12          # tune to your scraper throttles (each scraper also has its own semaphore & bucket)
+    BATCH = 500       # how many DB rows to stage per iteration
+    to_process = None if (limit is None or limit <= 0) else int(limit)
 
     attempted = 0
     found = 0
-    for p in products:
-        attempted += 1
-        sres = None
-        if scraper.site_code == "mashinibg" and p.item_number:
-            # Try by item number (+ brand hint)
-            try:
-                sres = await scraper.search_by_item_number(p.item_number, brand=p.brand)
-            except Exception:
-                sres = None
-        if (not sres) and p.barcode:
-            # Fallback to barcode
-            try:
-                sres = await scraper.search_by_barcode(p.barcode)
-            except Exception:
-                sres = None
+    tried_ids: Set[int] = set()
+    cache: Dict[tuple, Optional[SearchResult]] = {}
 
-        if sres and (sres.competitor_sku or sres.competitor_barcode or sres.url):
-            m = Match(
-                product_id=p.id, site_id=site.id,
-                competitor_sku=sres.competitor_sku,
-                competitor_barcode=sres.competitor_barcode,
-            )
-            session.add(m); found += 1
+    t0 = time.perf_counter()
+    print(f"[AUTO] Start: site={scraper.site_code} limit={limit} batch={BATCH} par={PAR}")
 
-    if attempted:
+    async def resolve(prod: Product) -> Optional[SearchResult]:
+        """Use per-site locating strategy; cache repeated keys inside this run."""
+        async def by_item_number():
+            item_no = (prod.item_number or "").strip() or None
+            brand   = (prod.brand or "").strip() or None
+            if not item_no:
+                return None
+            key = (scraper.site_code, "item_number", item_no.lower(), (brand or "").lower())
+            if key in cache:
+                return cache[key]
+            try:
+                r = await scraper.search_by_item_number(item_no, brand=brand)  # Mashini implements this
+            except Exception:
+                r = None
+            cache[key] = r
+            return r
+
+        async def by_barcode():
+            code = (prod.barcode or "").strip() or None
+            if not code:
+                return None
+            key = (scraper.site_code, "barcode", code)
+            if key in cache:
+                return cache[key]
+            try:
+                r = await scraper.search_by_barcode(code)  # Praktiker/MrB/Mashini implement this
+            except Exception:
+                r = None
+            cache[key] = r
+            return r
+
+        # Site-specific preference
+        if scraper.site_code == "mashinibg":
+            return (await by_item_number()) or (await by_barcode())
+        else:
+            return await by_barcode()
+
+    while True:
+        batch_cap = BATCH if (to_process is None) else max(0, min(BATCH, to_process - attempted))
+        if batch_cap == 0:
+            break
+
+        # Unmatched for this site
+        sub = select(Match.product_id).where(Match.site_id == site.id)
+        stmt = (
+            select(Product)
+            .where(Product.id.not_in(sub))
+            .order_by(Product.id.desc())
+        )
+        if tried_ids:
+            stmt = stmt.where(~Product.id.in_(tried_ids))
+        stmt = stmt.limit(batch_cap)
+
+        products = session.execute(stmt).scalars().all()
+        if not products:
+            print(f"[AUTO] No more unmatched rows for site={scraper.site_code}")
+            break
+
+        for p in products:
+            tried_ids.add(p.id)
+
+        sem = asyncio.Semaphore(PAR)
+        async def pooled(p: Product):
+            async with sem:
+                return p, await resolve(p)
+
+        results = await asyncio.gather(*(pooled(p) for p in products))
+        before_found = found
+
+        for p, sres in results:
+            attempted += 1
+            if not sres:
+                continue
+
+            comp_sku = (sres.competitor_sku or "").strip() or None
+            comp_bar = (sres.competitor_barcode or "").strip() or None
+
+            # Site-specific identifier fill-ins
+            if scraper.site_code == "mashinibg":
+                # If Mashini search didn’t expose a SKU, store our item_number as their SKU.
+                if not comp_sku:
+                    comp_sku = (p.item_number or "").strip() or None
+                if not comp_bar:
+                    comp_bar = (p.barcode or "").strip() or None
+            else:
+                # For sites that don’t return barcode from search, keep our EAN as matching key.
+                if not comp_bar:
+                    comp_bar = (p.barcode or "").strip() or None
+
+            if comp_sku or comp_bar:
+                session.add(Match(
+                    product_id=p.id,
+                    site_id=site.id,
+                    competitor_sku=comp_sku,
+                    competitor_barcode=comp_bar,
+                ))
+                found += 1
+
         session.commit()
+        elapsed = time.perf_counter() - t0
+        print(
+            f"[AUTO] Batch committed: site={scraper.site_code} "
+            f"processed={attempted} new_matches={found - before_found} "
+            f"batch_size={len(products)} elapsed={elapsed:.1f}s "
+            f"remaining={'∞' if to_process is None else max(0, to_process - attempted)}"
+        )
+
+        if to_process is not None and attempted >= to_process:
+            break
+
+    total = time.perf_counter() - t0
+    print(f"[AUTO] Finished: site={scraper.site_code} attempted={attempted} found={found} elapsed={total:.1f}s")
     return attempted, found
 
 # NEW: bulk lookup with latest snapshot URL/Name (prefers SKU snapshot, else barcode)

@@ -107,7 +107,7 @@ class PraktikerScraper(BaseScraper):
             return bar, "barcode"
         return "", "none"
 
-    async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
+    async def fetch_product_by_match(self, match, product=None) -> Optional[CompetitorDetail]:
         """
         Scrape using the chosen key (SKU preferred over barcode).
         If searching by barcode, we try to DERIVE the Praktiker SKU from the /p/<digits> link.

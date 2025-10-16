@@ -23,7 +23,7 @@ class BaseScraper:
     site_code: str
     async def search_by_barcode(self, barcode: Optional[str]) -> Optional[SearchResult]:
         raise NotImplementedError
-    async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
+    async def fetch_product_by_match(self, match, product=None) -> Optional[CompetitorDetail]:
         raise NotImplementedError
     async def search_by_item_number(self, item_number: Optional[str], brand: Optional[str] = None) -> Optional[SearchResult]:
         return None

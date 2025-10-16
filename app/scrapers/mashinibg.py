@@ -240,6 +240,24 @@ class MashiniBgScraper(BaseScraper):
             name=(data or {}).get("name"),
         )
 
+    async def search_by_barcode(self, barcode: Optional[str]) -> Optional[SearchResult]:
+        if not barcode:
+            return None
+        search_url = MASHINIBG_SEARCH_URL.format(url_quote(str(barcode), safe=""))
+        async with self._sem:
+            await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
+            await self._bucket.take()
+            html = await _get_html(search_url)
+        data, pdp_link = _parse_search_card(html)
+        if not data and not pdp_link:
+            return None
+        return SearchResult(
+            competitor_sku=None,
+            competitor_barcode=None,  # we won’t discover it from the grid; we’ll key by our EAN later
+            url=(data or {}).get("url") or pdp_link or search_url,
+            name=(data or {}).get("name"),
+        )
+
     def _choose_query(self, match) -> tuple[str, str]:
         sku = (match.competitor_sku or "").strip() or None
         bar = (match.competitor_barcode or "").strip() or None
@@ -247,15 +265,37 @@ class MashiniBgScraper(BaseScraper):
         if bar: return bar, "barcode"
         return "", "none"
 
-    async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
-        query, used = self._choose_query(match)
+    async def fetch_product_by_match(self, match, product=None) -> Optional[CompetitorDetail]:
+        """
+        Prefer competitor_sku, else competitor_barcode.
+        If both are missing (typical after auto-match by item_number), fall back to
+        product.item_number (+ brand) to search and scrape.
+        """
+
+        # 1) normal path (SKU/EAN from match)
+        def _choose_query():
+            sku = (getattr(match, "competitor_sku", None) or "").strip() or None
+            bar = (getattr(match, "competitor_barcode", None) or "").strip() or None
+            if sku: return sku, "sku"
+            if bar: return bar, "barcode"
+            return None, "none"
+
+        query, used = _choose_query()
+
+        # 2) fallback: product.item_number (+ brand) for Mashini
+        if not query and product is not None:
+            item_number = (getattr(product, "item_number", None) or "").strip() or None
+            brand = (getattr(product, "brand", None) or "").strip() or None
+            if item_number:
+                # Use the same search endpoint as auto-match
+                query = item_number if not brand else f"{item_number} {brand}"
+                used = "item_number"
+
         if not query:
             return None
 
-        # in fetch_product_by_match(...)
+        # Search page
         search_url = MASHINIBG_SEARCH_URL.format(url_quote(str(query), safe=""))
-
-        # Search page pass
         async with self._sem:
             await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
             await self._bucket.take()
@@ -279,10 +319,10 @@ class MashiniBgScraper(BaseScraper):
             if p2 is not None: promo = p2
             url = pdp_link
 
-        # Final identifiers:
-        # - Keep provided competitor_sku if you have one; Mashini rarely exposes a stable numeric id in list urls.
-        final_sku = (match.competitor_sku or "").strip() or None
-        final_bar = (match.competitor_barcode or "").strip() or (query if used == "barcode" else None)
+        # Keep any provided identifiers; if we searched by barcode, keep it;
+        # if we searched by item_number there may be no stable SKU/EAN to store here.
+        final_sku = (getattr(match, "competitor_sku", None) or "").strip() or None
+        final_bar = (getattr(match, "competitor_barcode", None) or "").strip() or (query if used == "barcode" else None)
 
         return CompetitorDetail(
             competitor_sku=final_sku,

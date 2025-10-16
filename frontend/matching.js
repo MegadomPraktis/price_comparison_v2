@@ -390,16 +390,37 @@ nextPageBtn.onclick = () => { page = page + 1; loadProducts(); };
 tagFilter.onchange = () => { page = 1; loadProducts(); };
 autoMatchBtn.onclick = async () => {
   const code = siteSelect.value;
-  const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}&limit=100`, { method: "POST" });
-  if (!r.ok) {
-    const err = await r.text();
-    alert("Auto-match failed:\n" + err);
-    return;
+  if (!code) { alert("Choose a site first."); return; }
+
+  // spinner
+  const original = autoMatchBtn.innerHTML;
+  autoMatchBtn.disabled = true;
+  autoMatchBtn.innerHTML = `
+    <span style="display:inline-flex;align-items:center;gap:.5rem">
+      <svg width="16" height="16" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity="0.25"></circle>
+        <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" fill="none">
+          <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite"/>
+        </path>
+      </svg>
+      Matching…
+    </span>`;
+
+  try {
+    // omit 'limit' → backend will process ALL (we’ll change the route below)
+    const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    alert(`Auto match → attempted=${data.attempted}, found=${data.found}`);
+    await loadProducts();
+  } catch (e) {
+    alert("Auto-match failed:\n" + (e?.message || e));
+  } finally {
+    autoMatchBtn.innerHTML = original;
+    autoMatchBtn.disabled = false;
   }
-  const data = await r.json();
-  alert(`Auto match -> attempted=${data.attempted}, found=${data.found}`);
-  await loadProducts();
 };
+
 refreshAssetsBtn.onclick = async () => {
   // Optional: limit how many SKUs to refresh each click
   const payload = { limit: 500 }; // change or remove to refresh all

@@ -198,7 +198,7 @@ async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int
     written = 0
     for m, p in session.execute(qmatch).all():
         try:
-            detail: Optional[CompetitorDetail] = await scraper.fetch_product_by_match(m)
+            detail: Optional[CompetitorDetail] = await scraper.fetch_product_by_match(m, p)
         except Exception:
             continue
         if not detail:

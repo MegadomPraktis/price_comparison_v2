@@ -172,7 +172,7 @@ class MrBricolageScraper(BaseScraper):
         if bar: return bar, "barcode"
         return "", "none"
 
-    async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
+    async def fetch_product_by_match(self, match, product=None) -> Optional[CompetitorDetail]:
         """
         Scrape using chosen key. We search and parse the first card.
         If prices aren’t visible on the grid, we’ll still return name+URL

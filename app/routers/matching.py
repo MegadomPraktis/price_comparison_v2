@@ -2,6 +2,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
+import time
 
 from app.db import get_session
 from app.schemas import MatchOut, MatchCreate
@@ -14,6 +15,11 @@ from app.services.matching import (
 from app.registry import registry
 
 router = APIRouter()
+
+class AutoMatchResult(BaseModel):
+    attempted: int
+    found: int
+    elapsed_ms: float
 
 @router.get("/matches", response_model=List[MatchOut])
 async def api_list_matches(
@@ -37,12 +43,17 @@ class AutoMatchResult(BaseModel):
 @router.post("/matches/auto", response_model=AutoMatchResult)
 async def api_auto_match(
     site_code: str,
-    limit: int = Query(100, ge=1, le=1000),
+    # None or 0 ⇒ all; positive ⇒ process up to that many
+    limit: int | None = Query(None, ge=0, le=100000),
 ):
     scraper = registry.get(site_code)
+    print(f"[AUTO] API received: site={site_code} limit={limit}")
+    t0 = time.perf_counter()
     with get_session() as session:
         attempted, found = await auto_match_for_site(session, scraper, limit=limit)
-        return AutoMatchResult(attempted=attempted, found=found)
+        print(f"[AUTO] API done: site={site_code} attempted={attempted} found={found}")
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        return AutoMatchResult(attempted=attempted, found=found, elapsed_ms=round(elapsed_ms, 2))
 
 # NEW: bulk lookup endpoint to prefill competitor fields for a page of products
 class MatchesLookupRequest(BaseModel):

@@ -1,4 +1,4 @@
-// comparison.js — clone of Matching-style filters + comparison rendering
+// comparison.js — Matching-style filters + comparison rendering with true per-page control
 // - Search (SKU/Name/Barcode)
 // - Tag filter (id="tagFilter" + tag_id param)
 // - Brand free text + Brand dropdown (same as Matching)
@@ -77,10 +77,15 @@ if (!priceSelect) {
 
 // ---------------- State ----------------
 let page = 1;
-const PER_PAGE = 50;
 let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
 let lastTag  = "";
+
+// Per-page comes from the input, default to 50 if empty/invalid.
+function perPage() {
+  const n = Number(compareLimit?.value || 50);
+  return Number.isFinite(n) && n > 0 ? Math.floor(Math.min(n, 2000)) : 50;
+}
 
 // ---------------- CSS (spinner, highlights) ----------------
 (function injectCSS(){
@@ -261,7 +266,7 @@ function statusSingle(row) {
 }
 function statusAll(p) {
   const our = toNum(p.praktis_price);
-  const comps = [p.praktiker_price, p.mrbricolage_price, p.mashinibg_price].filter(v => v !== null);
+  const comps = [p.praktiker_price, p.mrbricolage_price, p.mashinibg_price].map(toNum).filter(v => v !== null);
   if (our === null || comps.length === 0) return "na";
   const minComp = Math.min(...comps);
   if (our < minComp) return "better";
@@ -352,73 +357,75 @@ function renderAllPage(pivotPage, assetsBySku) {
   tbody.innerHTML = html;
 }
 
+function clampPage(totalItems) {
+  const pages = Math.max(1, Math.ceil(totalItems / perPage()));
+  if (page > pages) page = pages;
+  if (page < 1) page = 1;
+  return pages;
+}
+
+function setPageInfo(pageCount, sliceCount, total) {
+  if (!pageInfo) return;
+  pageInfo.textContent = `Page ${page} / ${pageCount} (rows: ${sliceCount} of ${total})`;
+}
+
 // ---------------- Main load ----------------
 async function loadCore(refetch=true) {
   const site_code = siteSelect?.value || "all";
-  const limit     = Number(compareLimit?.value || 50);
 
+  // When we (re)fetch from the server, pull a large enough window (2000) to cover any client-side perPage.
+  // The input controls only pagination on the client.
   if (refetch || site_code !== lastSite || (tagFilter?.value ?? "") !== lastTag) {
     const tagVal = tagFilter?.value ?? "";
     const q      = (searchInput?.value || "").trim();
     const brand  = currentBrandFilter();
-    // EXACTLY like Matching: send q, tag_id, brand
-    lastRows = await fetchCompare({ site_code, limit, source: "snapshots", tag_id: tagVal, brand, q }) || [];
+    lastRows = await fetchCompare({ site_code, limit: 2000, source: "snapshots", tag_id: tagVal, brand, q }) || [];
     lastSite = site_code; lastTag = tagVal; page = 1;
   }
 
-  const qText   = (searchInput?.value || "").trim().toLowerCase();
-  const brandRaw= currentBrandFilter();
-  const priceF  = (priceSelect?.value || "");
+  const qText     = (searchInput?.value || "").trim().toLowerCase();
+  const brandRaw  = currentBrandFilter();
+  const priceF    = (priceSelect?.value || "");
   const selectedTag = tagFilter?.value ?? "";
 
   if (site_code === "all") {
     let pivot = pivotAll(lastRows);
 
-    // Client-side tag filter fallback (only if rows carry tags)
     if (selectedTag) {
       pivot = pivot.filter(p => {
         const tags = p.tags || [];
         return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
       });
     }
-
-    // Search text
     if (qText) {
       pivot = pivot.filter(p =>
         (p.code || "").toLowerCase().includes(qText) ||
         (p.name || "").toLowerCase().includes(qText)
       );
     }
-
-    // Brand (substring, normalized)
     if (brandRaw) {
       pivot = pivot.filter(p => brandMatches(p.brand, brandRaw));
     }
-
-    // Price status
     if (priceF) {
       pivot = pivot.filter(p => statusAll(p) === priceF);
     }
 
-    // paginate + render
     const total = pivot.length;
-    const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
+    const pages = clampPage(total);
+    const start = (page - 1) * perPage(), end = start + perPage();
     const slice = pivot.slice(start, end);
     const assets = await fetchAssetsForSkus(slice.map(p => p.code));
     renderAllPage(slice, assets);
-    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
+    setPageInfo(pages, slice.length, total);
   } else {
     let rows = lastRows.slice();
 
-    // Client-side tag filter fallback
     if (selectedTag) {
       rows = rows.filter(r => {
         const tags = r.product_tags || r.tags || [];
         return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
       });
     }
-
-    // Search text
     if (qText) {
       rows = rows.filter(r =>
         [r.product_sku, r.product_name, r.product_barcode, r.competitor_sku, r.competitor_name]
@@ -426,59 +433,26 @@ async function loadCore(refetch=true) {
           .some(s => s.includes(qText))
       );
     }
-
-    // Brand (same as Matching)
     if (brandRaw) {
       rows = rows.filter(r => brandMatches(r.product_brand || r.brand, brandRaw));
     }
-
-    // Price status
     if (priceF) {
       rows = rows.filter(r => statusSingle(r) === priceF);
     }
 
-    // paginate + render
     const total = rows.length;
-    const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
+    const pages = clampPage(total);
+    const start = (page - 1) * perPage(), end = start + perPage();
     const slice = rows.slice(start, end);
     const assets = await fetchAssetsForSkus(slice.map(r => r.product_sku).filter(Boolean));
     renderSingle(slice, site_code, assets);
-    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
+    setPageInfo(pages, slice.length, total);
   }
 }
-function exportViaBackend() {
-  const site_code = siteSelect?.value || "all";
-  const tag_id    = (tagFilter?.value || "").trim();
-
-  const q   = (document.getElementById("searchInput")?.value || "").trim();
-  const bt  = (document.getElementById("brandInput")?.value || "").trim();
-  const bs  = (document.getElementById("brandSelect")?.value || "").trim();
-  const brand = bs || bt;
-
-  const price = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
-  const price_status = price === "better" ? "ours_lower" : price === "worse" ? "ours_higher" : "";
-
-  const per_page = 50;                                 // current page size
-  const params = new URLSearchParams();
-  params.set("site_code", site_code);
-  params.set("limit", "2000");                         // <= /api/compare cap to avoid 422
-  params.set("source", "snapshots");
-  if (tag_id) params.set("tag_id", tag_id);
-  if (q) params.set("q", q);
-  if (brand) params.set("brand", brand);
-  if (price_status) params.set("price_status", price_status);
-  if (typeof page !== "undefined") params.set("page", String(page));
-  params.set("per_page", String(per_page));
-
-  window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
-}
-
-(document.getElementById("exportExcel") || document.querySelector("[data-export], .export"))
-  ?.addEventListener("click", exportViaBackend);
 
 // ---------------- Init & Events ----------------
 async function init() {
-  // Sites -> ensure "All sites" exists and is default (like you asked)
+  // Sites -> ensure "All sites" exists and is default
   await loadSitesInto(siteSelect);
   if (!siteSelect.querySelector('option[value="all"]')) {
     const opt = document.createElement("option");
@@ -496,11 +470,11 @@ async function init() {
     }
   });
 
-  // Tags — EXACTLY like Matching
+  // Tags — same as Matching
   await loadTagsInto(tagFilter, true);
   tagFilter.addEventListener("change", () => { page = 1; loadCore(true); });
 
-  // Brands — EXACTLY like Matching
+  // Brands — same as Matching
   await fetchBrands();
   brandInput.addEventListener("input", () => { if (brandInput.value) brandSelect.value = ""; page = 1; loadCore(true); });
   brandSelect.addEventListener("change", () => { if (brandSelect.value) brandInput.value = ""; page = 1; loadCore(true); });
@@ -514,8 +488,12 @@ async function init() {
   // Price status
   priceSelect.addEventListener("change", () => { page = 1; loadCore(false); });
 
-  // Limit default (50 per page)
-  if (compareLimit) compareLimit.value = "50";
+  // IMPORTANT: do NOT override the input's value (don't force 50) — it comes from HTML. :contentReference[oaicite:1]{index=1}
+  // When user changes the per-page input, re-render and clamp page.
+  if (compareLimit) {
+    compareLimit.addEventListener("change", () => { page = 1; loadCore(false); });
+    compareLimit.addEventListener("input",  () => { /* live feel without refetch */ loadCore(false); });
+  }
 
   // Buttons & pager — spinner + green-text toasts
   const onLoadLatest = withSpinner(loadLatestBtn, "Loading…", async () => { await loadCore(true); toast("Loaded latest data from DB"); });

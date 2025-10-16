@@ -1,4 +1,6 @@
-export const API = location.origin;
+export const API = /^https?:/.test(location.origin)
+  ? location.origin
+  : (window.__API_BASE__ || "http://127.0.0.1:8001");
 
 export async function loadSitesInto(selectEl) {
   const r = await fetch(`${API}/api/sites`);
