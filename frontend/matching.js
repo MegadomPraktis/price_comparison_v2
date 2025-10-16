@@ -2,6 +2,31 @@
 // It reuses existing controls if they already exist in the HTML.
 import { API, loadSitesInto, loadTagsInto, escapeHtml, makeTagBadge } from "./shared.js";
 
+/* ────────────────────────────────────────────────────────────────────────────
+   TAG CACHE (5-min TTL) — avoids per-row GET /api/tags
+   ──────────────────────────────────────────────────────────────────────────── */
+const TAG_CACHE_KEY = "ALL_TAGS_CACHE_V1";
+const TAG_TTL_MS = 5 * 60 * 1000;
+let ALL_TAGS_MEM = null;
+async function getAllTagsCached() {
+  if (ALL_TAGS_MEM) return ALL_TAGS_MEM;
+  try {
+    const raw = localStorage.getItem(TAG_CACHE_KEY);
+    if (raw) {
+      const { ts, data } = JSON.parse(raw);
+      if (ts && Array.isArray(data) && (Date.now() - ts) < TAG_TTL_MS) {
+        ALL_TAGS_MEM = data;
+        return ALL_TAGS_MEM;
+      }
+    }
+  } catch {}
+  const r = await fetch(`${API}/api/tags`);
+  const data = r.ok ? await r.json() : [];
+  ALL_TAGS_MEM = data;
+  try { localStorage.setItem(TAG_CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch {}
+  return ALL_TAGS_MEM;
+}
+
 // ---------------- DOM ----------------
 const siteSelect = document.getElementById("siteSelect");
 const refreshSitesBtn = document.getElementById("refreshSites");
@@ -13,7 +38,8 @@ siteSelect.onchange = () => { page = 1; loadProducts(); };
 
 // Tag filter (kept)
 const tagFilter = document.getElementById("tagFilter");
-await loadTagsInto(tagFilter, true);
+await loadTagsInto(tagFilter, true);            // keep existing helper (one request)
+void getAllTagsCached();                        // warm up cache for per-row pickers
 
 // Paging + search (kept)
 let page = 1;
@@ -206,7 +232,7 @@ async function loadProducts() {
     }
   }
 
-  // 3) Tags per product
+  // 3) Tags per product (BULK once per page)
   let tagsByProductId = {};
   if (productIds.length) {
     const r3 = await fetch(`${API}/api/tags/by_products`, {
@@ -221,12 +247,13 @@ async function loadProducts() {
   const skus = products.map(p => p.sku);
   const assetsBySku = await fetchAssetsForSkus(skus);
 
-  renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku);
+  await renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku);
   if (pageInfo) pageInfo.textContent = `Page ${page} (rows: ${products.length})`;
 }
 
 // =========================
-function renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku = {}) {
+async function renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku = {}) {
+  const ALL_TAGS = await getAllTagsCached();   // ← ONE list used for all rows
   tbodyMatch.innerHTML = "";
   for (const p of products) {
     const m = matchesByProductId[p.id] || null;
@@ -263,70 +290,57 @@ function renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBy
       <td><button class="saveMatch">${m ? "Update" : "Save"}</button></td>
     `;
 
+    // --- badges: render from local state (NO per-row network calls)
     const tagsCell = tr.querySelector(".tags-cell");
-    const renderBadges = async () => {
-      const r = await fetch(`${API}/api/tags/by_products`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product_ids: [p.id] })
-      });
-      const data = r.ok ? await r.json() : {};
-      const tags = data[p.id] || [];
+    let currTags = Array.isArray(prodTags) ? [...prodTags] : [];
+    function drawBadges() {
       tagsCell.innerHTML = "";
-      for (const t of tags) {
-        const badge = makeTagBadge(t, async () => {
-          await fetch(`${API}/api/tags/unassign`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ product_id: p.id, tag_id: t.id })
-          });
-          await renderBadges();
-        });
-        tagsCell.appendChild(badge);
+      for (const t of currTags) {
+        tagsCell.appendChild(
+          makeTagBadge(t, async () => {
+            await fetch(`${API}/api/tags/unassign`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ product_id: p.id, tag_id: t.id })
+            });
+            currTags = currTags.filter(x => x.id !== t.id);
+            drawBadges();
+          })
+        );
       }
-    };
-    for (const t of prodTags) {
-      const badge = makeTagBadge(t, async () => {
-        await fetch(`${API}/api/tags/unassign`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product_id: p.id, tag_id: t.id })
-        });
-        await renderBadges();
-      });
-      tagsCell.appendChild(badge);
+    }
+    drawBadges();
+
+    // --- tag picker: fill from cached ALL_TAGS (no GET per row)
+    const picker = tr.querySelector(".tag-picker");
+    picker.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = ""; opt0.textContent = "Choose tag…";
+    picker.appendChild(opt0);
+    for (const t of ALL_TAGS) {
+      const o = document.createElement("option");
+      o.value = String(t.id);
+      o.textContent = t.name;
+      picker.appendChild(o);
     }
 
-    // populate tag picker
-    (async () => {
-      const picker = tr.querySelector(".tag-picker");
-      const r = await fetch(`${API}/api/tags`);
-      const tags = r.ok ? await r.json() : [];
-      picker.innerHTML = "";
-      const opt = document.createElement("option");
-      opt.value = ""; opt.textContent = "Choose tag…";
-      picker.appendChild(opt);
-      for (const t of tags) {
-        const o = document.createElement("option");
-        o.value = String(t.id);
-        o.textContent = t.name;
-        picker.appendChild(o);
-      }
-    })();
-
-    // assign tag
+    // assign tag (POST once; update local state)
     tr.querySelector(".addTag").onclick = async () => {
-      const tagId = Number(tr.querySelector(".tag-picker").value || 0);
+      const tagId = Number(picker.value || 0);
       if (!tagId) return;
       await fetch(`${API}/api/tags/assign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ product_id: p.id, tag_id: tagId })
       });
-      await renderBadges();
+      const newTag = ALL_TAGS.find(t => Number(t.id) === tagId);
+      if (newTag && !currTags.some(t => t.id === newTag.id)) {
+        currTags.push(newTag);
+        drawBadges();
+      }
     };
 
-    // save/update match
+    // save/update match (kept)
     tr.querySelector(".saveMatch").onclick = async () => {
       const compSku = tr.querySelector(".comp-sku").value.trim() || null;
       const compBar = tr.querySelector(".comp-bar").value.trim() || null;
@@ -390,37 +404,16 @@ nextPageBtn.onclick = () => { page = page + 1; loadProducts(); };
 tagFilter.onchange = () => { page = 1; loadProducts(); };
 autoMatchBtn.onclick = async () => {
   const code = siteSelect.value;
-  if (!code) { alert("Choose a site first."); return; }
-
-  // spinner
-  const original = autoMatchBtn.innerHTML;
-  autoMatchBtn.disabled = true;
-  autoMatchBtn.innerHTML = `
-    <span style="display:inline-flex;align-items:center;gap:.5rem">
-      <svg width="16" height="16" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity="0.25"></circle>
-        <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" fill="none">
-          <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite"/>
-        </path>
-      </svg>
-      Matching…
-    </span>`;
-
-  try {
-    // omit 'limit' → backend will process ALL (we’ll change the route below)
-    const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}`, { method: "POST" });
-    if (!r.ok) throw new Error(await r.text());
-    const data = await r.json();
-    alert(`Auto match → attempted=${data.attempted}, found=${data.found}`);
-    await loadProducts();
-  } catch (e) {
-    alert("Auto-match failed:\n" + (e?.message || e));
-  } finally {
-    autoMatchBtn.innerHTML = original;
-    autoMatchBtn.disabled = false;
+  const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}&limit=100`, { method: "POST" });
+  if (!r.ok) {
+    const err = await r.text();
+    alert("Auto-match failed:\n" + err);
+    return;
   }
+  const data = await r.json();
+  alert(`Auto match -> attempted=${data.attempted}, found=${data.found}`);
+  await loadProducts();
 };
-
 refreshAssetsBtn.onclick = async () => {
   // Optional: limit how many SKUs to refresh each click
   const payload = { limit: 500 }; // change or remove to refresh all

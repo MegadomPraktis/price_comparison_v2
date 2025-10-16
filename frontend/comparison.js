@@ -1,10 +1,35 @@
-// comparison.js — Matching-style filters + comparison rendering with true per-page control
+// comparison.js — clone of Matching-style filters + comparison rendering
 // - Search (SKU/Name/Barcode)
 // - Tag filter (id="tagFilter" + tag_id param)
 // - Brand free text + Brand dropdown (same as Matching)
 // - Price status dropdown (All / Ours lower / Ours higher)
 // - All-sites default; N/A ignored for highlighting; spinner + green-text toasts
-import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
+import { API, loadSitesInto, /* loadTagsInto, */ escapeHtml, fmtPrice } from "./shared.js";
+
+/* ────────────────────────────────────────────────────────────────────────────
+   TAG CACHE (5-min TTL) — avoids repeated GET /api/tags while navigating
+   ──────────────────────────────────────────────────────────────────────────── */
+const TAG_CACHE_KEY = "ALL_TAGS_CACHE_V1";
+const TAG_TTL_MS = 5 * 60 * 1000;
+let ALL_TAGS_MEM = null;
+async function getAllTagsCached() {
+  if (ALL_TAGS_MEM) return ALL_TAGS_MEM;
+  try {
+    const raw = localStorage.getItem(TAG_CACHE_KEY);
+    if (raw) {
+      const { ts, data } = JSON.parse(raw);
+      if (ts && Array.isArray(data) && (Date.now() - ts) < TAG_TTL_MS) {
+        ALL_TAGS_MEM = data;
+        return ALL_TAGS_MEM;
+      }
+    }
+  } catch {}
+  const r = await fetch(`${API}/api/tags`);
+  const data = r.ok ? await r.json() : [];
+  ALL_TAGS_MEM = data;
+  try { localStorage.setItem(TAG_CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch {}
+  return ALL_TAGS_MEM;
+}
 
 // ---------------- DOM ----------------
 const siteSelect      = document.getElementById("siteSelect");
@@ -77,15 +102,10 @@ if (!priceSelect) {
 
 // ---------------- State ----------------
 let page = 1;
+const PER_PAGE = 50;
 let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
 let lastTag  = "";
-
-// Per-page comes from the input, default to 50 if empty/invalid.
-function perPage() {
-  const n = Number(compareLimit?.value || 50);
-  return Number.isFinite(n) && n > 0 ? Math.floor(Math.min(n, 2000)) : 50;
-}
 
 // ---------------- CSS (spinner, highlights) ----------------
 (function injectCSS(){
@@ -266,7 +286,7 @@ function statusSingle(row) {
 }
 function statusAll(p) {
   const our = toNum(p.praktis_price);
-  const comps = [p.praktiker_price, p.mrbricolage_price, p.mashinibg_price].map(toNum).filter(v => v !== null);
+  const comps = [p.praktiker_price, p.mrbricolage_price, p.mashinibg_price].filter(v => v !== null);
   if (our === null || comps.length === 0) return "na";
   const minComp = Math.min(...comps);
   if (our < minComp) return "better";
@@ -357,75 +377,73 @@ function renderAllPage(pivotPage, assetsBySku) {
   tbody.innerHTML = html;
 }
 
-function clampPage(totalItems) {
-  const pages = Math.max(1, Math.ceil(totalItems / perPage()));
-  if (page > pages) page = pages;
-  if (page < 1) page = 1;
-  return pages;
-}
-
-function setPageInfo(pageCount, sliceCount, total) {
-  if (!pageInfo) return;
-  pageInfo.textContent = `Page ${page} / ${pageCount} (rows: ${sliceCount} of ${total})`;
-}
-
 // ---------------- Main load ----------------
 async function loadCore(refetch=true) {
   const site_code = siteSelect?.value || "all";
+  const limit     = Number(compareLimit?.value || 50);
 
-  // When we (re)fetch from the server, pull a large enough window (2000) to cover any client-side perPage.
-  // The input controls only pagination on the client.
   if (refetch || site_code !== lastSite || (tagFilter?.value ?? "") !== lastTag) {
     const tagVal = tagFilter?.value ?? "";
     const q      = (searchInput?.value || "").trim();
     const brand  = currentBrandFilter();
-    lastRows = await fetchCompare({ site_code, limit: 2000, source: "snapshots", tag_id: tagVal, brand, q }) || [];
+    // EXACTLY like Matching: send q, tag_id, brand
+    lastRows = await fetchCompare({ site_code, limit, source: "snapshots", tag_id: tagVal, brand, q }) || [];
     lastSite = site_code; lastTag = tagVal; page = 1;
   }
 
-  const qText     = (searchInput?.value || "").trim().toLowerCase();
-  const brandRaw  = currentBrandFilter();
-  const priceF    = (priceSelect?.value || "");
+  const qText   = (searchInput?.value || "").trim().toLowerCase();
+  const brandRaw= currentBrandFilter();
+  const priceF  = (priceSelect?.value || "");
   const selectedTag = tagFilter?.value ?? "";
 
   if (site_code === "all") {
     let pivot = pivotAll(lastRows);
 
+    // Client-side tag filter fallback (only if rows carry tags)
     if (selectedTag) {
       pivot = pivot.filter(p => {
         const tags = p.tags || [];
         return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
       });
     }
+
+    // Search text
     if (qText) {
       pivot = pivot.filter(p =>
         (p.code || "").toLowerCase().includes(qText) ||
         (p.name || "").toLowerCase().includes(qText)
       );
     }
+
+    // Brand (substring, normalized)
     if (brandRaw) {
       pivot = pivot.filter(p => brandMatches(p.brand, brandRaw));
     }
+
+    // Price status
     if (priceF) {
       pivot = pivot.filter(p => statusAll(p) === priceF);
     }
 
+    // paginate + render
     const total = pivot.length;
-    const pages = clampPage(total);
-    const start = (page - 1) * perPage(), end = start + perPage();
+    const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
     const slice = pivot.slice(start, end);
     const assets = await fetchAssetsForSkus(slice.map(p => p.code));
     renderAllPage(slice, assets);
-    setPageInfo(pages, slice.length, total);
+    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   } else {
     let rows = lastRows.slice();
 
+    // Client-side tag filter fallback
     if (selectedTag) {
       rows = rows.filter(r => {
         const tags = r.product_tags || r.tags || [];
         return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
       });
     }
+
+    // Search text
     if (qText) {
       rows = rows.filter(r =>
         [r.product_sku, r.product_name, r.product_barcode, r.competitor_sku, r.competitor_name]
@@ -433,20 +451,24 @@ async function loadCore(refetch=true) {
           .some(s => s.includes(qText))
       );
     }
+
+    // Brand (same as Matching)
     if (brandRaw) {
       rows = rows.filter(r => brandMatches(r.product_brand || r.brand, brandRaw));
     }
+
+    // Price status
     if (priceF) {
       rows = rows.filter(r => statusSingle(r) === priceF);
     }
 
+    // paginate + render
     const total = rows.length;
-    const pages = clampPage(total);
-    const start = (page - 1) * perPage(), end = start + perPage();
+    const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
     const slice = rows.slice(start, end);
     const assets = await fetchAssetsForSkus(slice.map(r => r.product_sku).filter(Boolean));
     renderSingle(slice, site_code, assets);
-    setPageInfo(pages, slice.length, total);
+    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   }
 }
 
@@ -470,11 +492,12 @@ async function init() {
     }
   });
 
-  // Tags — same as Matching
-  await loadTagsInto(tagFilter, true);
+  // Tags — populate via cached list (no repeated GETs while navigating)
+  const tags = await getAllTagsCached();
+  tagFilter.innerHTML = `<option value="">— Tags —</option>` + tags.map(t => `<option value="${String(t.id)}">${escapeHtml(t.name)}</option>`).join("");
   tagFilter.addEventListener("change", () => { page = 1; loadCore(true); });
 
-  // Brands — same as Matching
+  // Brands — EXACTLY like Matching
   await fetchBrands();
   brandInput.addEventListener("input", () => { if (brandInput.value) brandSelect.value = ""; page = 1; loadCore(true); });
   brandSelect.addEventListener("change", () => { if (brandSelect.value) brandInput.value = ""; page = 1; loadCore(true); });
@@ -488,14 +511,10 @@ async function init() {
   // Price status
   priceSelect.addEventListener("change", () => { page = 1; loadCore(false); });
 
-  // IMPORTANT: do NOT override the input's value (don't force 50) — it comes from HTML. :contentReference[oaicite:1]{index=1}
-  // When user changes the per-page input, re-render and clamp page.
-  if (compareLimit) {
-    compareLimit.addEventListener("change", () => { page = 1; loadCore(false); });
-    compareLimit.addEventListener("input",  () => { /* live feel without refetch */ loadCore(false); });
-  }
+  // Limit default (50 per page)
+  if (compareLimit) compareLimit.value = "50";
 
-  // Buttons & pager — spinner + green-text toasts
+  // Buttons & pager — spinner + toasts
   const onLoadLatest = withSpinner(loadLatestBtn, "Loading…", async () => { await loadCore(true); toast("Loaded latest data from DB"); });
   const onScrapeNow  = withSpinner(scrapeNowBtn,  "Scraping…", async () => {
     const site_code = siteSelect.value || "all";
@@ -506,9 +525,9 @@ async function init() {
   });
 
   loadLatestBtn?.addEventListener("click", () => { page = 1; onLoadLatest(); });
-  scrapeNowBtn?.addEventListener("click", () => { page = 1; onScrapeNow(); });
-  prevPageBtn?.addEventListener("click", () => { page = Math.max(1, page - 1); loadCore(false); });
-  nextPageBtn?.addEventListener("click", () => { page = page + 1; loadCore(false); });
+  scrapeNowBtn?.addEventListener("click",  () => { page = 1; onScrapeNow(); });
+  prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); loadCore(false); });
+  nextPageBtn?.addEventListener("click",   () => { page = page + 1; loadCore(false); });
 
   // First render
   await loadCore(true);
