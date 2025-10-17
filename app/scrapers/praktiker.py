@@ -37,18 +37,75 @@ def to_float(txt: Optional[str]) -> Optional[float]:
     return float(m.group(1).replace(",", "."))
 
 def parse_dual_price_block(scope) -> Tuple[Optional[float], Optional[float]]:
-    cont = scope.css_first("span.product-price")
-    if not cont: return (None, None)
+    """
+    Return (BGN, EUR) from a price block.
+
+    Supports both the legacy structure with <span class="price-wrapper">…</span>
+    and the new one where values live directly under .product-price.
+
+    Also prefers the non-old block so we don't accidentally read the struck-out price.
+    """
+    # Prefer the non-old block; fall back to the first product-price
+    cont = (scope.css_first("span.product-price:not(.product-price--old)")
+            or scope.css_first("span.product-price"))
+    if not cont:
+        return (None, None)
+
+    # Old structure: wrappers contain separate BGN/EUR nodes
     wrappers = cont.css("span.price-wrapper")
-    if not wrappers: return (None, None)
-    bgn = None
-    first_val = wrappers[0].css_first("span.product-price__value")
-    if first_val: bgn = to_float(first_val.text(strip=True))
-    eur = None
-    if len(wrappers) > 1:
-        second_val = wrappers[1].css_first("span.product-price__value")
-        if second_val: eur = to_float(second_val.text(strip=True))
+    if wrappers:
+        bgn = None
+        v = wrappers[0].css_first("span.product-price__value")
+        if v:
+            bgn = to_float(v.text(strip=True))
+        eur = None
+        if len(wrappers) > 1:
+            v2 = wrappers[1].css_first("span.product-price__value")
+            if v2:
+                eur = to_float(v2.text(strip=True))
+        return (bgn, eur)
+
+    # New structure: values are direct children inside .product-price
+    values = [to_float(v.text(strip=True)) for v in cont.css("span.product-price__value")]
+    values = [x for x in values if x is not None]
+    if not values:
+        return (None, None)
+    bgn = values[0]
+    eur = values[1] if len(values) > 1 else None
     return (bgn, eur)
+
+# ---- NEW: extract regular & promo according to Praktiker's markup ----
+def extract_praktiker_prices(scope) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Return (regular_bgn, promo_bgn).
+
+    If an old price exists (.product-price--old), that's the regular price.
+    The next .product-price (without --old) provides the current/promo BGN (its FIRST value).
+    If no old price exists, the single price is treated as regular, promo=None.
+    """
+    # Old (regular) price
+    old_el = scope.css_first("span.product-price.product-price--old span.product-price__value")
+    regular = to_float(old_el.text(strip=True)) if old_el else None
+
+    # Promo/current price (BGN is the first value in the non-old block)
+    promo = None
+    current_block = scope.css_first("span.product-price:not(.product-price--old)")
+    if current_block:
+        v = current_block.css_first("span.product-price__value")
+        if v:
+            promo = to_float(v.text(strip=True))
+
+    # Fallback: if nothing found at all, fall back to dual-price parser as "current" price
+    if regular is None and promo is None:
+        bgn, _ = parse_dual_price_block(scope)
+        regular = bgn
+        promo = None
+
+    # If only promo is present (no old), treat it as regular
+    if regular is None and promo is not None:
+        regular, promo = promo, None
+
+    return (regular, promo)
 
 async def _make_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(http2=False, limits=CLIENT_LIMITS, timeout=CLIENT_TIMEOUT, headers=build_headers(), follow_redirects=True)
@@ -128,7 +185,8 @@ class PraktikerScraper(BaseScraper):
         tree = HTMLParser(html)
         grid = tree.css_first("div.products-grid")
         name = None
-        price_bgn = None
+        price_reg_bgn = None
+        price_promo_bgn = None
         pdp_url = None
         derived_sku = None
 
@@ -137,7 +195,10 @@ class PraktikerScraper(BaseScraper):
             if card:
                 name_el = card.css_first("h2.product-item__title a")
                 name = name_el.text(strip=True) if name_el else None
-                price_bgn, _ = parse_dual_price_block(card)
+
+                # >>> NEW: capture (regular, promo) directly from the card
+                price_reg_bgn, price_promo_bgn = extract_praktiker_prices(card)
+
                 a = card.css_first("a[href*='/p/']")
                 if a:
                     href = a.attributes.get("href")
@@ -147,8 +208,8 @@ class PraktikerScraper(BaseScraper):
                         if m_id:
                             derived_sku = m_id.group(1)  # we ALWAYS try to derive a SKU from the link
 
-        # If price not visible on the grid, follow PDP
-        if price_bgn is None and pdp_url:
+        # If we still have no price (e.g., card hides it), follow PDP
+        if (price_reg_bgn is None and price_promo_bgn is None) and pdp_url:
             async with self._sem:
                 await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
                 await self._bucket.take()
@@ -158,7 +219,13 @@ class PraktikerScraper(BaseScraper):
             if not name:
                 h = t2.css_first("h1, h1.product-title, title")
                 name = h.text(strip=True) if h else None
-            price_bgn, _ = parse_dual_price_block(t2)
+
+            # >>> NEW: capture (regular, promo) from PDP
+            price_reg_bgn, price_promo_bgn = extract_praktiker_prices(t2)
+
+            # Fallback to dual parser as a last resort
+            if price_reg_bgn is None and price_promo_bgn is None:
+                price_reg_bgn, _ = parse_dual_price_block(t2)
 
         # Decide final identifiers:
         # - Prefer derived_sku when present (especially when we searched by barcode)
@@ -171,8 +238,8 @@ class PraktikerScraper(BaseScraper):
             competitor_barcode=final_bar,
             url=pdp_url or search_url,
             name=name,
-            regular_price=price_bgn,
-            promo_price=None
+            regular_price=price_reg_bgn,
+            promo_price=price_promo_bgn
         )
 
 class _TokenBucket:

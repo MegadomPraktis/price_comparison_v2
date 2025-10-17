@@ -1,9 +1,5 @@
-// comparison.js — clone of Matching-style filters + comparison rendering
-// - Search (SKU/Name/Barcode)
-// - Tag filter (id="tagFilter" + tag_id param)
-// - Brand free text + Brand dropdown (same as Matching)
-// - Price status dropdown (All / Ours lower / Ours higher)
-// - All-sites default; N/A ignored for highlighting; spinner + green-text toasts
+// comparison.js — unified price cells (promo bold, old crossed), effective-price highlighting
+// Keeps Email + Export buttons and all existing filters/controls intact.
 import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
 // ---------------- DOM ----------------
@@ -82,7 +78,7 @@ let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
 let lastTag  = "";
 
-// ---------------- CSS (spinner, highlights) ----------------
+// ---------------- CSS (spinner, highlights, price block) ----------------
 (function injectCSS(){
   if (document.getElementById("compare-extra-css")) return;
   const s = document.createElement("style");
@@ -93,6 +89,10 @@ let lastTag  = "";
     .compare-img{max-height:48px;max-width:80px;border-radius:6px}
     td.green{ background:rgba(22,163,74,.15) !important }
     td.red{ background:rgba(220,38,38,.12) !important }
+    .price-wrap{display:flex;flex-direction:column;line-height:1.05}
+    .price-old{font-size:12px;color:#93a1c6;text-decoration:line-through;opacity:.9}
+    .price-new{font-weight:800}
+    .price-link{margin-left:6px;text-decoration:none}
   `;
   document.head.appendChild(s);
 })();
@@ -120,20 +120,18 @@ function toast(msg, type="ok") {
   if (!wrap) {
     wrap = document.createElement("div");
     wrap.id = "toast-wrap";
-    // centered top; stacked
     wrap.style.cssText = "position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none";
     document.body.appendChild(wrap);
   }
   const box = document.createElement("div");
   box.textContent = msg;
-  // green TEXT (not background) for normal; red text for error
   box.style.cssText = "padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#0f1730;color:#22c55e;min-width:220px;text-align:center;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35)";
   if (type === "error") { box.style.color="#ef4444"; }
   wrap.appendChild(box);
   setTimeout(() => { try{wrap.removeChild(box);}catch{} }, 2200);
 }
 
-// ---------------- Utils ----------------
+// ---------------- Utils (effective price + unified cell) ----------------
 function resetHead(cols) {
   thead.innerHTML = "";
   const tr = document.createElement("tr");
@@ -151,10 +149,39 @@ const toNum = (v) => {
   const n = Number(s.replace(/\s+/g, "").replace(",", "."));
   return Number.isFinite(n) ? n : null;
 };
-// Highlight: green = equal to min of available; red = above min; N/A ignored
-function classForValue(value, candidates) {
-  const v = toNum(value);
-  const nums = candidates.map(toNum).filter(n => n !== null);
+// NO currency suffix in UI cells
+function fmtPlain(n) {
+  const v = toNum(n);
+  if (v === null) return "N/A";
+  return v.toFixed(2);
+}
+
+// effective price = promo if present else regular
+const effective = (promo, regular) => {
+  const p = toNum(promo);
+  const r = toNum(regular);
+  return p !== null ? p : r;
+};
+
+// unified price block (promo bold, old crossed, optional link chevron)
+function priceCellHTML(promo, regular, url=null) {
+  const eff = effective(promo, regular);
+  const showOld = (toNum(regular) !== null && toNum(promo) !== null && toNum(promo) < toNum(regular));
+  const oldStr  = showOld ? fmtPlain(regular) : "";
+  const newStr  = fmtPlain(eff);
+  const link = url ? `<a class="price-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">↗</a>` : "";
+  return `
+    <div class="price-wrap">
+      ${showOld ? `<span class="price-old">${oldStr}</span>` : ``}
+      <span class="price-new">${newStr}${link}</span>
+    </div>
+  `;
+}
+
+// Highlight using EFFECTIVE prices; N/A ignored
+function classForEffective(valEff, allEff) {
+  const v = toNum(valEff);
+  const nums = allEff.map(toNum).filter(n => n !== null);
   if (v === null || nums.length === 0) return "";
   const min = Math.min(...nums);
   if (v === min) return "green";
@@ -172,8 +199,8 @@ function brandMatches(rowBrandRaw, filterRaw) {
   const rowNorm = normBrand(rowBrandRaw);
   const filtNorm = normBrand(filterRaw);
   if (!filtNorm) return true;
-  if (!rowNorm) return false;            // only exclude if we actively filter
-  return rowNorm.includes(filtNorm);     // substring like in Matching
+  if (!rowNorm) return false;
+  return rowNorm.includes(filtNorm);
 }
 
 // ---------------- Data fetch ----------------
@@ -215,7 +242,7 @@ async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null,
   return r.json();
 }
 
-// ---------------- Pivot (All sites) ----------------
+// ---------------- Pivot (All sites) — keep promo+regular so we can render unified cells ----------------
 function pivotAll(flatRows) {
   const map = new Map();
   for (const r of flatRows) {
@@ -225,43 +252,50 @@ function pivotAll(flatRows) {
       map.set(sku, {
         code: sku,
         name: r.product_name ?? "N/A",
-        brand: r.product_brand || r.brand || null,   // ensure brand travels in payload
-        tags:  r.product_tags || r.tags || null,     // allow client tag fallback like Matching
-        praktis_price: toNum(r.product_price_regular),
-        praktiker_price: null, praktiker_url: null,
-        mrbricolage_price: null, mrbricolage_url: null,
-        mashinibg_price: null, mashinibg_url: null,
+        brand: r.product_brand || r.brand || null,
+        tags:  r.product_tags || r.tags || null,
+
+        praktis_regular: toNum(r.product_price_regular),
+        praktis_promo:   toNum(r.product_price_promo),
+
+        praktiker_regular: null, praktiker_promo: null, praktiker_url: null,
+        mrbricolage_regular: null, mrbricolage_promo: null, mrbricolage_url: null,
+        mashinibg_regular: null, mashinibg_promo: null, mashinibg_url: null,
       });
     }
     const agg = map.get(sku);
     const site = (r.competitor_site || "").toLowerCase();
-    const compPrice = toNum(r.competitor_price_regular);
+    const compReg = toNum(r.competitor_price_regular);
+    const compPro = toNum(r.competitor_price_promo);
+    const url = r.competitor_url || null;
+
     if (site.includes("praktiker")) {
-      agg.praktiker_price = compPrice;
-      agg.praktiker_url   = r.competitor_url || null;
+      agg.praktiker_regular = compReg; agg.praktiker_promo = compPro; agg.praktiker_url = url;
     } else if (site.includes("bricol")) {
-      agg.mrbricolage_price = compPrice;
-      agg.mrbricolage_url   = r.competitor_url || null;
+      agg.mrbricolage_regular = compReg; agg.mrbricolage_promo = compPro; agg.mrbricolage_url = url;
     } else if (site.includes("mashin") || site === "mashinibg") {
-      agg.mashinibg_price = compPrice;
-      agg.mashinibg_url   = r.competitor_url || null;
+      agg.mashinibg_regular = compReg; agg.mashinibg_promo = compPro; agg.mashinibg_url = url;
     }
   }
   return Array.from(map.values());
 }
 
-// ---------------- Price status (for filters) ----------------
+// ---------------- Price status filters use EFFECTIVE prices ----------------
 function statusSingle(row) {
-  const our = toNum(row.product_price_regular);
-  const comp = toNum(row.competitor_price_regular);
+  const our = effective(row.product_price_promo, row.product_price_regular);
+  const comp = effective(row.competitor_price_promo, row.competitor_price_regular);
   if (our === null || comp === null) return "na";
   if (our < comp) return "better";
   if (our > comp) return "worse";
   return "equal";
 }
 function statusAll(p) {
-  const our = toNum(p.praktis_price);
-  const comps = [p.praktiker_price, p.mrbricolage_price, p.mashinibg_price].filter(v => v !== null);
+  const our = effective(p.praktis_promo, p.praktis_regular);
+  const comps = [
+    effective(p.praktiker_promo, p.praktiker_regular),
+    effective(p.mrbricolage_promo, p.mrbricolage_regular),
+    effective(p.mashinibg_promo, p.mashinibg_regular),
+  ].filter(v => v !== null);
   if (our === null || comps.length === 0) return "na";
   const minComp = Math.min(...comps);
   if (our < minComp) return "better";
@@ -269,23 +303,23 @@ function statusAll(p) {
   return "equal";
 }
 
-// ---------------- Renderers ----------------
+// ---------------- Renderers (unified price cells; no currency suffix) ----------------
 function renderSingle(rows, site, assetsBySku) {
   const headers = site === "praktiker" ? [
       "Praktis Code","Image","Praktis Name","Praktiker Code","Praktiker Name",
-      "Praktis Regular Price","Praktiker Regular Price","Praktis Promo Price","Praktiker Promo Price",
+      "Praktis Price","Praktiker Price",
     ] : site === "mrbricolage" ? [
       "Praktis Code","Image","Praktis Name","MrBricolage Code","MrBricolage Name",
-      "Praktis Regular Price","MrBricolage Regular Price","Praktis Promo Price","MrBricolage Promo Price",
+      "Praktis Price","MrBricolage Price",
     ] : [
       "Praktis Code","Image","Praktis Name","OnlineMashini Code","OnlineMashini Name",
-      "Praktis Regular Price","OnlineMashini Regular Price","Praktis Promo Price","OnlineMashini Promo Price",
+      "Praktis Price","OnlineMashini Price",
     ];
   resetHead(headers);
 
   const html = rows.map(r => {
-    const ourReg   = toNum(r.product_price_regular);
-    const theirReg = toNum(r.competitor_price_regular);
+    const ourEff   = effective(r.product_price_promo, r.product_price_regular);
+    const theirEff = effective(r.competitor_price_promo, r.competitor_price_regular);
 
     const compName = r.competitor_name || "N/A";
     const compLink = r.competitor_url
@@ -296,8 +330,8 @@ function renderSingle(rows, site, assetsBySku) {
     const praktisUrl = asset.product_url || null;
     const praktisImg = asset.image_url || null;
 
-    const clsOur  = classForValue(ourReg,   [ourReg, theirReg]);
-    const clsComp = classForValue(theirReg, [ourReg, theirReg]);
+    const clsOur  = classForEffective(ourEff,   [ourEff, theirEff]);
+    const clsComp = classForEffective(theirEff, [ourEff, theirEff]);
 
     return `
       <tr>
@@ -306,10 +340,8 @@ function renderSingle(rows, site, assetsBySku) {
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(r.product_name ?? "N/A")}</a>` : escapeHtml(r.product_name ?? "N/A")}</td>
         <td>${escapeHtml(r.competitor_sku ?? "")}</td>
         <td>${compLink}</td>
-        <td class="${clsOur}">${fmtPrice(ourReg)}</td>
-        <td class="${clsComp}">${fmtPrice(theirReg)}</td>
-        <td>${fmtPrice(r.product_price_promo)}</td>
-        <td>${fmtPrice(r.competitor_price_promo)}</td>
+        <td class="${clsOur}">${priceCellHTML(r.product_price_promo, r.product_price_regular, null)}</td>
+        <td class="${clsComp}">${priceCellHTML(r.competitor_price_promo, r.competitor_price_regular, r.competitor_url || null)}</td>
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
@@ -318,35 +350,38 @@ function renderSingle(rows, site, assetsBySku) {
 function renderAllPage(pivotPage, assetsBySku) {
   resetHead([
     "Praktis Code","Image","Praktis Name",
-    "Praktis Regular Price","Praktiker Regular Price","MrBricolage Regular Price","OnlineMashini Regular Price",
+    "Praktis Price","Praktiker Price","MrBricolage Price","OnlineMashini Price",
   ]);
 
   const html = pivotPage.map(p => {
-    const allVals = [p.praktis_price, p.praktiker_price, p.mrbricolage_price, p.mashinibg_price];
-    const clsP   = classForValue(p.praktis_price, allVals);
-    const clsK   = classForValue(p.praktiker_price, allVals);
-    const clsM   = classForValue(p.mrbricolage_price, allVals);
-    const clsMash= classForValue(p.mashinibg_price, allVals);
+    const effP   = effective(p.praktis_promo, p.praktis_regular);
+    const effK   = effective(p.praktiker_promo, p.praktiker_regular);
+    const effM   = effective(p.mrbricolage_promo, p.mrbricolage_regular);
+    const effMash= effective(p.mashinibg_promo, p.mashinibg_regular);
+
+    const allEff = [effP, effK, effM, effMash];
+
+    const clsP   = classForEffective(effP, allEff);
+    const clsK   = classForEffective(effK, allEff);
+    const clsM   = classForEffective(effM, allEff);
+    const clsMash= classForEffective(effMash, allEff);
 
     const asset = assetsBySku[p.code] || {};
     const praktisUrl = asset.product_url || null;
     const praktisImg = asset.image_url || null;
 
-    const cell = (price, url, cls) => {
-      const text = fmtPrice(price);
-      const inner = url ? `${text} <a href="${escapeHtml(url)}" target="_blank" rel="noopener">↗</a>` : text;
-      return `<td class="${cls}">${inner}</td>`;
-    };
+    const cell = (promo, regular, url, cls) =>
+      `<td class="${cls}">${priceCellHTML(promo, regular, url)}</td>`;
 
     return `
       <tr>
         <td>${escapeHtml(p.code)}</td>
         ${imgTd(praktisImg)}
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
-        ${cell(p.praktis_price,      null,            clsP)}
-        ${cell(p.praktiker_price,    p.praktiker_url, clsK)}
-        ${cell(p.mrbricolage_price,  p.mrbricolage_url, clsM)}
-        ${cell(p.mashinibg_price,    p.mashinibg_url, clsMash)}
+        ${cell(p.praktis_promo,      p.praktis_regular,      null,            clsP)}
+        ${cell(p.praktiker_promo,    p.praktiker_regular,    p.praktiker_url, clsK)}
+        ${cell(p.mrbricolage_promo,  p.mrbricolage_regular,  p.mrbricolage_url, clsM)}
+        ${cell(p.mashinibg_promo,    p.mashinibg_regular,    p.mashinibg_url, clsMash)}
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
@@ -361,7 +396,6 @@ async function loadCore(refetch=true) {
     const tagVal = tagFilter?.value ?? "";
     const q      = (searchInput?.value || "").trim();
     const brand  = currentBrandFilter();
-    // EXACTLY like Matching: send q, tag_id, brand
     lastRows = await fetchCompare({ site_code, limit, source: "snapshots", tag_id: tagVal, brand, q }) || [];
     lastSite = site_code; lastTag = tagVal; page = 1;
   }
@@ -374,7 +408,6 @@ async function loadCore(refetch=true) {
   if (site_code === "all") {
     let pivot = pivotAll(lastRows);
 
-    // Client-side tag filter fallback (only if rows carry tags)
     if (selectedTag) {
       pivot = pivot.filter(p => {
         const tags = p.tags || [];
@@ -382,7 +415,6 @@ async function loadCore(refetch=true) {
       });
     }
 
-    // Search text
     if (qText) {
       pivot = pivot.filter(p =>
         (p.code || "").toLowerCase().includes(qText) ||
@@ -390,17 +422,14 @@ async function loadCore(refetch=true) {
       );
     }
 
-    // Brand (substring, normalized)
     if (brandRaw) {
       pivot = pivot.filter(p => brandMatches(p.brand, brandRaw));
     }
 
-    // Price status
     if (priceF) {
       pivot = pivot.filter(p => statusAll(p) === priceF);
     }
 
-    // paginate + render
     const total = pivot.length;
     const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
     const slice = pivot.slice(start, end);
@@ -410,7 +439,6 @@ async function loadCore(refetch=true) {
   } else {
     let rows = lastRows.slice();
 
-    // Client-side tag filter fallback
     if (selectedTag) {
       rows = rows.filter(r => {
         const tags = r.product_tags || r.tags || [];
@@ -418,7 +446,6 @@ async function loadCore(refetch=true) {
       });
     }
 
-    // Search text
     if (qText) {
       rows = rows.filter(r =>
         [r.product_sku, r.product_name, r.product_barcode, r.competitor_sku, r.competitor_name]
@@ -427,17 +454,14 @@ async function loadCore(refetch=true) {
       );
     }
 
-    // Brand (same as Matching)
     if (brandRaw) {
       rows = rows.filter(r => brandMatches(r.product_brand || r.brand, brandRaw));
     }
 
-    // Price status
     if (priceF) {
       rows = rows.filter(r => statusSingle(r) === priceF);
     }
 
-    // paginate + render
     const total = rows.length;
     const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
     const slice = rows.slice(start, end);
@@ -449,7 +473,6 @@ async function loadCore(refetch=true) {
 
 // ---------------- Init & Events ----------------
 async function init() {
-  // Sites -> ensure "All sites" exists and is default (like you asked)
   await loadSitesInto(siteSelect);
   if (!siteSelect.querySelector('option[value="all"]')) {
     const opt = document.createElement("option");
@@ -467,11 +490,11 @@ async function init() {
     }
   });
 
-  // Tags — EXACTLY like Matching
+  // Tags
   await loadTagsInto(tagFilter, true);
   tagFilter.addEventListener("change", () => { page = 1; loadCore(true); });
 
-  // Brands — EXACTLY like Matching
+  // Brands
   await fetchBrands();
   brandInput.addEventListener("input", () => { if (brandInput.value) brandSelect.value = ""; page = 1; loadCore(true); });
   brandSelect.addEventListener("change", () => { if (brandSelect.value) brandInput.value = ""; page = 1; loadCore(true); });
@@ -503,7 +526,7 @@ async function init() {
   prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); loadCore(false); });
   nextPageBtn?.addEventListener("click",   () => { page = page + 1; loadCore(false); });
 
-  // Export current view -> backend XLSX (unchanged)
+  // Export current view (unchanged)
   function exportViaBackend() {
     const site_code = siteSelect?.value || "all";
     const tag_id    = (tagFilter?.value || "").trim();
@@ -516,10 +539,10 @@ async function init() {
     const price = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
     const price_status = price === "better" ? "ours_lower" : price === "worse" ? "ours_higher" : "";
 
-    const per_page = 50;                                 // current page size
+    const per_page = 50;
     const params = new URLSearchParams();
     params.set("site_code", site_code);
-    params.set("limit", "2000");                         // <= /api/compare cap to avoid 422
+    params.set("limit", "2000");
     params.set("source", "snapshots");
     if (tag_id) params.set("tag_id", tag_id);
     if (q) params.set("q", q);
