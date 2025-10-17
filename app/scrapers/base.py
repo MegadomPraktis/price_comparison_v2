@@ -18,12 +18,14 @@ class CompetitorDetail:
     name: Optional[str] = None
     regular_price: Optional[float] = None
     promo_price: Optional[float] = None
+    # NEW: optional item label (e.g., "Оферта на седмицата")
+    label: Optional[str] = None
 
 class BaseScraper:
-    site_code: str
+    site_code: str = ""
     async def search_by_barcode(self, barcode: Optional[str]) -> Optional[SearchResult]:
-        raise NotImplementedError
-    async def fetch_product_by_match(self, match, product=None) -> Optional[CompetitorDetail]:
+        return None
+    async def fetch_product_by_match(self, match) -> Optional[CompetitorDetail]:
         raise NotImplementedError
     async def search_by_item_number(self, item_number: Optional[str], brand: Optional[str] = None) -> Optional[SearchResult]:
         return None

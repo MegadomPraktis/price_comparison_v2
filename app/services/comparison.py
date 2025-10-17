@@ -154,6 +154,7 @@ def build_rows_from_snapshots(
         comp_reg = snap.regular_price if snap else None
         comp_prm = snap.promo_price if snap else None
         comp_url = snap.url if snap else None
+        comp_label = snap.competitor_label if snap else None  # <<< ADDED
 
         rows.append({
             # ours
@@ -173,6 +174,7 @@ def build_rows_from_snapshots(
             "competitor_price_regular": comp_reg,
             "competitor_price_promo": comp_prm,
             "competitor_url": comp_url,
+            "competitor_label": comp_label,  # <<< ADDED
         })
 
     return rows
@@ -213,6 +215,7 @@ async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int
             regular_price=detail.regular_price,
             promo_price=detail.promo_price,
             url=detail.url,
+            competitor_label=getattr(detail, "label", None),  # <<< already present
         )
         session.add(snap)
         written += 1

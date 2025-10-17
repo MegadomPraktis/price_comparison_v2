@@ -1,4 +1,4 @@
-// comparison.js — unified price cells (promo bold, old crossed), effective-price highlighting
+// comparison.js — stacked old/new price; Praktiker label inline next to arrow in same cell
 // Keeps Email + Export buttons and all existing filters/controls intact.
 import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
@@ -78,7 +78,7 @@ let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
 let lastTag  = "";
 
-// ---------------- CSS (spinner, highlights, price block) ----------------
+// ---------------- CSS (spinner, highlights, stacked price with inline badge) ----------------
 (function injectCSS(){
   if (document.getElementById("compare-extra-css")) return;
   const s = document.createElement("style");
@@ -89,10 +89,26 @@ let lastTag  = "";
     .compare-img{max-height:48px;max-width:80px;border-radius:6px}
     td.green{ background:rgba(22,163,74,.15) !important }
     td.red{ background:rgba(220,38,38,.12) !important }
-    .price-wrap{display:flex;flex-direction:column;line-height:1.05}
+
+    /* Stacked price: old (top, crossed) + new (bottom, bold) */
+    .price-wrap{
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      line-height:1.15; text-align:center; white-space:nowrap;
+      font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      font-variant-numeric: tabular-nums;
+    }
     .price-old{font-size:12px;color:#93a1c6;text-decoration:line-through;opacity:.9}
+    .price-line{display:inline-flex; align-items:center; gap:6px;}
     .price-new{font-weight:800}
-    .price-link{margin-left:6px;text-decoration:none}
+    .price-link{ text-decoration:none }
+
+    /* Tiny inline badge (label) */
+    .price-badge{
+      font-size:11px; font-weight:700; letter-spacing:.3px;
+      border:1px solid var(--border); border-radius:999px;
+      padding:2px 6px;
+      background:#fff1e2; color:#8d4a12;
+    }
   `;
   document.head.appendChild(s);
 })();
@@ -163,17 +179,43 @@ const effective = (promo, regular) => {
   return p !== null ? p : r;
 };
 
-// unified price block (promo bold, old crossed, optional link chevron)
-function priceCellHTML(promo, regular, url=null) {
+// Label shortener (BG)
+function abbrLabel(lbl) {
+  if (!lbl) return "";
+  const s = lbl.trim();
+  const map = {
+    "Оферта на седмицата": "ОС",
+    "Оферта на деня": "ОД",
+    "Топ оферта": "ТО",
+    "В брошура": "БР",
+  };
+  if (map[s]) return map[s];
+  // default: initial letters
+  return s.split(/\s+/).map(w => w[0]).join("").toUpperCase().slice(0, 3);
+}
+
+// ---- Read label ONLY from competitor_label to match your DB/API ----
+function getRowLabel(row) {
+  const v = row && row.competitor_label;
+  return (typeof v === "string" && v.trim()) ? v.trim() : null;
+}
+
+// unified price block (stacked old/new; label inline with arrow on the new-price line)
+function priceCellHTML(promo, regular, url=null, labelText=null) {
   const eff = effective(promo, regular);
   const showOld = (toNum(regular) !== null && toNum(promo) !== null && toNum(promo) < toNum(regular));
   const oldStr  = showOld ? fmtPlain(regular) : "";
   const newStr  = fmtPlain(eff);
   const link = url ? `<a class="price-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">↗</a>` : "";
+  const badge = labelText ? `<span class="price-badge" title="${escapeHtml(labelText)}">${escapeHtml(abbrLabel(labelText))}</span>` : "";
   return `
     <div class="price-wrap">
       ${showOld ? `<span class="price-old">${oldStr}</span>` : ``}
-      <span class="price-new">${newStr}${link}</span>
+      <span class="price-line">
+        <span class="price-new">${newStr}</span>
+        ${link}
+        ${badge}
+      </span>
     </div>
   `;
 }
@@ -242,7 +284,7 @@ async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null,
   return r.json();
 }
 
-// ---------------- Pivot (All sites) — keep promo+regular so we can render unified cells ----------------
+// ---------------- Pivot (All sites) — keep promo+regular and praktiker label ----------------
 function pivotAll(flatRows) {
   const map = new Map();
   for (const r of flatRows) {
@@ -258,7 +300,7 @@ function pivotAll(flatRows) {
         praktis_regular: toNum(r.product_price_regular),
         praktis_promo:   toNum(r.product_price_promo),
 
-        praktiker_regular: null, praktiker_promo: null, praktiker_url: null,
+        praktiker_regular: null, praktiker_promo: null, praktiker_url: null, praktiker_label: null,
         mrbricolage_regular: null, mrbricolage_promo: null, mrbricolage_url: null,
         mashinibg_regular: null, mashinibg_promo: null, mashinibg_url: null,
       });
@@ -271,6 +313,7 @@ function pivotAll(flatRows) {
 
     if (site.includes("praktiker")) {
       agg.praktiker_regular = compReg; agg.praktiker_promo = compPro; agg.praktiker_url = url;
+      agg.praktiker_label = getRowLabel(r); // ONLY competitor_label
     } else if (site.includes("bricol")) {
       agg.mrbricolage_regular = compReg; agg.mrbricolage_promo = compPro; agg.mrbricolage_url = url;
     } else if (site.includes("mashin") || site === "mashinibg") {
@@ -303,7 +346,7 @@ function statusAll(p) {
   return "equal";
 }
 
-// ---------------- Renderers (unified price cells; no currency suffix) ----------------
+// ---------------- Renderers (stacked price + Praktiker inline label) ----------------
 function renderSingle(rows, site, assetsBySku) {
   const headers = site === "praktiker" ? [
       "Praktis Code","Image","Praktis Name","Praktiker Code","Praktiker Name",
@@ -333,6 +376,9 @@ function renderSingle(rows, site, assetsBySku) {
     const clsOur  = classForEffective(ourEff,   [ourEff, theirEff]);
     const clsComp = classForEffective(theirEff, [ourEff, theirEff]);
 
+    // Praktiker label from exact competitor_label field
+    const competitorLabel = (site === "praktiker") ? getRowLabel(r) : null;
+
     return `
       <tr>
         <td>${escapeHtml(r.product_sku ?? "")}</td>
@@ -341,7 +387,12 @@ function renderSingle(rows, site, assetsBySku) {
         <td>${escapeHtml(r.competitor_sku ?? "")}</td>
         <td>${compLink}</td>
         <td class="${clsOur}">${priceCellHTML(r.product_price_promo, r.product_price_regular, null)}</td>
-        <td class="${clsComp}">${priceCellHTML(r.competitor_price_promo, r.competitor_price_regular, r.competitor_url || null)}</td>
+        <td class="${clsComp}">${priceCellHTML(
+            r.competitor_price_promo,
+            r.competitor_price_regular,
+            r.competitor_url || null,
+            competitorLabel
+        )}</td>
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
@@ -370,8 +421,8 @@ function renderAllPage(pivotPage, assetsBySku) {
     const praktisUrl = asset.product_url || null;
     const praktisImg = asset.image_url || null;
 
-    const cell = (promo, regular, url, cls) =>
-      `<td class="${cls}">${priceCellHTML(promo, regular, url)}</td>`;
+    const cell = (promo, regular, url, cls, label=null) =>
+      `<td class="${cls}">${priceCellHTML(promo, regular, url, label)}</td>`;
 
     return `
       <tr>
@@ -379,7 +430,7 @@ function renderAllPage(pivotPage, assetsBySku) {
         ${imgTd(praktisImg)}
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
         ${cell(p.praktis_promo,      p.praktis_regular,      null,            clsP)}
-        ${cell(p.praktiker_promo,    p.praktiker_regular,    p.praktiker_url, clsK)}
+        ${cell(p.praktiker_promo,    p.praktiker_regular,    p.praktiker_url, clsK, p.praktiker_label || null)}
         ${cell(p.mrbricolage_promo,  p.mrbricolage_regular,  p.mrbricolage_url, clsM)}
         ${cell(p.mashinibg_promo,    p.mashinibg_regular,    p.mashinibg_url, clsMash)}
       </tr>`;
@@ -553,7 +604,6 @@ async function init() {
 
     window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
   }
-
   (document.getElementById("exportExcel") || document.querySelector("[data-export], .export"))
     ?.addEventListener("click", exportViaBackend);
 

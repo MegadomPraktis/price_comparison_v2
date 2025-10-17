@@ -77,6 +77,8 @@ class PriceSnapshot(Base):
     regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     promo_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NEW: Praktiker (and future) item label text
+    competitor_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 # --- NEW: Tag model
 class Tag(Base):
