@@ -4,32 +4,7 @@
 // - Brand free text + Brand dropdown (same as Matching)
 // - Price status dropdown (All / Ours lower / Ours higher)
 // - All-sites default; N/A ignored for highlighting; spinner + green-text toasts
-import { API, loadSitesInto, /* loadTagsInto, */ escapeHtml, fmtPrice } from "./shared.js";
-
-/* ────────────────────────────────────────────────────────────────────────────
-   TAG CACHE (5-min TTL) — avoids repeated GET /api/tags while navigating
-   ──────────────────────────────────────────────────────────────────────────── */
-const TAG_CACHE_KEY = "ALL_TAGS_CACHE_V1";
-const TAG_TTL_MS = 5 * 60 * 1000;
-let ALL_TAGS_MEM = null;
-async function getAllTagsCached() {
-  if (ALL_TAGS_MEM) return ALL_TAGS_MEM;
-  try {
-    const raw = localStorage.getItem(TAG_CACHE_KEY);
-    if (raw) {
-      const { ts, data } = JSON.parse(raw);
-      if (ts && Array.isArray(data) && (Date.now() - ts) < TAG_TTL_MS) {
-        ALL_TAGS_MEM = data;
-        return ALL_TAGS_MEM;
-      }
-    }
-  } catch {}
-  const r = await fetch(`${API}/api/tags`);
-  const data = r.ok ? await r.json() : [];
-  ALL_TAGS_MEM = data;
-  try { localStorage.setItem(TAG_CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch {}
-  return ALL_TAGS_MEM;
-}
+import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
 // ---------------- DOM ----------------
 const siteSelect      = document.getElementById("siteSelect");
@@ -116,8 +91,8 @@ let lastTag  = "";
     @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
     .spin { animation: spin .9s linear infinite }
     .compare-img{max-height:48px;max-width:80px;border-radius:6px}
-    td.green{ background:rgba(22,163,74,.15) }
-    td.red{ background:rgba(220,38,38,.12) }
+    td.green{ background:rgba(22,163,74,.15) !important }
+    td.red{ background:rgba(220,38,38,.12) !important }
   `;
   document.head.appendChild(s);
 })();
@@ -474,7 +449,7 @@ async function loadCore(refetch=true) {
 
 // ---------------- Init & Events ----------------
 async function init() {
-  // Sites -> ensure "All sites" exists and is default
+  // Sites -> ensure "All sites" exists and is default (like you asked)
   await loadSitesInto(siteSelect);
   if (!siteSelect.querySelector('option[value="all"]')) {
     const opt = document.createElement("option");
@@ -492,9 +467,8 @@ async function init() {
     }
   });
 
-  // Tags — populate via cached list (no repeated GETs while navigating)
-  const tags = await getAllTagsCached();
-  tagFilter.innerHTML = `<option value="">— Tags —</option>` + tags.map(t => `<option value="${String(t.id)}">${escapeHtml(t.name)}</option>`).join("");
+  // Tags — EXACTLY like Matching
+  await loadTagsInto(tagFilter, true);
   tagFilter.addEventListener("change", () => { page = 1; loadCore(true); });
 
   // Brands — EXACTLY like Matching
@@ -528,6 +502,37 @@ async function init() {
   scrapeNowBtn?.addEventListener("click",  () => { page = 1; onScrapeNow(); });
   prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); loadCore(false); });
   nextPageBtn?.addEventListener("click",   () => { page = page + 1; loadCore(false); });
+
+  // Export current view -> backend XLSX (unchanged)
+  function exportViaBackend() {
+    const site_code = siteSelect?.value || "all";
+    const tag_id    = (tagFilter?.value || "").trim();
+
+    const q   = (document.getElementById("searchInput")?.value || "").trim();
+    const bt  = (document.getElementById("brandInput")?.value || "").trim();
+    const bs  = (document.getElementById("brandSelect")?.value || "").trim();
+    const brand = bs || bt;
+
+    const price = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
+    const price_status = price === "better" ? "ours_lower" : price === "worse" ? "ours_higher" : "";
+
+    const per_page = 50;                                 // current page size
+    const params = new URLSearchParams();
+    params.set("site_code", site_code);
+    params.set("limit", "2000");                         // <= /api/compare cap to avoid 422
+    params.set("source", "snapshots");
+    if (tag_id) params.set("tag_id", tag_id);
+    if (q) params.set("q", q);
+    if (brand) params.set("brand", brand);
+    if (price_status) params.set("price_status", price_status);
+    if (typeof page !== "undefined") params.set("page", String(page));
+    params.set("per_page", String(per_page));
+
+    window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
+  }
+
+  (document.getElementById("exportExcel") || document.querySelector("[data-export], .export"))
+    ?.addEventListener("click", exportViaBackend);
 
   // First render
   await loadCore(true);

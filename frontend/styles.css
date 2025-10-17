@@ -26,6 +26,15 @@
 }
 
 *{ box-sizing:border-box; }
+/* Hide native select arrows (keep your custom/orange arrow) */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  padding-right: 28px;            /* room for your orange arrow */
+  background-position: right 10px center;
+  background-repeat: no-repeat;
+}
 
 html,body{
   margin:0;

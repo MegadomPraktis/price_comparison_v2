@@ -14,13 +14,20 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.drawing.image import Image as XLImage
-
+from mimetypes import MimeTypes
+import openpyxl.packaging.manifest as _manifest
 router = APIRouter()
 
 # -----------------------------------------------------------------------------
 # Helpers: reuse your own API so filters match the Comparison tab 1:1
 # -----------------------------------------------------------------------------
-
+try:
+    if ".webp" not in _manifest.mimetypes.types_map[True]:
+        _manifest.mimetypes.add_type("image/webp", ".webp")
+        _manifest.mimetypes.add_type("image/webp", ".WEBP")  # just in case
+except Exception:
+    # keep going even if the table shape differs
+    pass
 def _internal_base() -> str:
     """
     Base URL for calling the app internally.
