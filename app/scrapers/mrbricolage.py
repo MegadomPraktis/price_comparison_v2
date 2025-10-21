@@ -44,17 +44,21 @@ def parse_price_block(el) -> Optional[float]:
     txt = el.text(strip=True) if hasattr(el, "text") else None
     return to_float(txt)
 
-def parse_mrb_card(card) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str]]:
+def parse_mrb_card(card) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str], Optional[str]]:
     """
-    Returns: (name, regular_price, promo_price, pdp_url)
-    HTML sketch (as per your example):
-      div.plp-product div.product
-        div.product__content-top a/h2/h3...
-        div.product__price--old div.product__price       -> old (regular)
-        div.product__price--new div.product__price       -> new (promo)
-        OR single div.product__price (regular when only one)
+    Returns: (name, regular_price, promo_price, pdp_url, label_text)
+
+    HTML (examples):
+      <div class="product">
+        ...
+        <div class="pdp-badge sale-badge TOP_RIGHT"> ... " -25% " </div>
+        <div class="pdp-badge BOTTOM_LEFT"><img src="...label-brochure-02.svg"></div>
+        ...
+        <div class="product__price--old"><div class="product__price">...</div></div>
+        <div class="product__price--new"><div class="product__price">...</div></div>
     """
-    if not card: return (None, None, None, None)
+    if not card:
+        return (None, None, None, None, None)
 
     # name & link
     name = None
@@ -68,7 +72,6 @@ def parse_mrb_card(card) -> Tuple[Optional[str], Optional[float], Optional[float
             if href:
                 pdp_url = href if href.startswith("http") else ("https://mr-bricolage.bg" + href)
         else:
-            # fallback to any header text inside content-top
             h = name_cont.css_first("a, h2, h3, h4, .product__title")
             if h:
                 name = h.text(strip=True)
@@ -93,7 +96,26 @@ def parse_mrb_card(card) -> Tuple[Optional[str], Optional[float], Optional[float
         regular_price = old_price or new_price
         promo_price = None
 
-    return (name, regular_price, promo_price, pdp_url)
+    # label
+    label_text: Optional[str] = None
+    # any badge container
+    for b in card.css("div.pdp-badge"):
+        cls = (b.attributes.get("class") or "").lower()
+        img = b.css_first("img")
+        src = (img.attributes.get("src") if img else "") or ""
+        src = src.lower()
+
+        if "sale-badge" in cls or "sale" in cls:
+            label_text = "Промо"
+            break
+        if "brochure" in src or "label-brochure" in src:
+            label_text = "Брошура"
+            break
+        if "top-offer" in src or "top" in cls:
+            label_text = "Топ"
+            break
+
+    return (name, regular_price, promo_price, pdp_url, label_text)
 
 async def _make_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
@@ -174,9 +196,7 @@ class MrBricolageScraper(BaseScraper):
 
     async def fetch_product_by_match(self, match, product=None) -> Optional[CompetitorDetail]:
         """
-        Scrape using chosen key. We search and parse the first card.
-        If prices aren’t visible on the grid, we’ll still return name+URL
-        (you can later extend this to fetch PDP if needed).
+        Scrape using chosen key. We parse the first PLP card.
         """
         query, _ = self._choose_query(match)
         if not query:
@@ -194,9 +214,8 @@ class MrBricolageScraper(BaseScraper):
         if not card:
             return None
 
-        name, regular_price, promo_price, pdp_url = parse_mrb_card(card)
+        name, regular_price, promo_price, pdp_url, label_text = parse_mrb_card(card)
 
-        # MrBricolage: we typically cannot derive a clean numeric SKU from the link → keep given identifiers
         final_sku = (match.competitor_sku or "").strip() or None
         final_bar = (match.competitor_barcode or "").strip() or None
 
@@ -206,5 +225,6 @@ class MrBricolageScraper(BaseScraper):
             url=pdp_url or search_url,
             name=name,
             regular_price=regular_price,
-            promo_price=promo_price
+            promo_price=promo_price,
+            label=label_text,  # <<< NEW — saved into PriceSnapshot.competitor_label by your service
         )

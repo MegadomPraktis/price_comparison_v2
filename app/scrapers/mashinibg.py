@@ -159,6 +159,7 @@ def _parse_search_card(html: str) -> Tuple[Optional[dict], Optional[str]]:
     if not card:
         return None, None
 
+    # --- Name + PDP link
     desc = card.css_first("div.col-8.col-md-8.full.description.pr-md-4")
     name = "N/A"
     if desc:
@@ -180,10 +181,28 @@ def _parse_search_card(html: str) -> Tuple[Optional[dict], Optional[str]]:
             if href:
                 pdp_link = href if href.startswith("http") else "https://www.onlinemashini.bg" + href
 
+    # --- Prices
     old_el = card.css_first("span.otstupka.oldprice s")
     price_el = card.css_first("div.price")
     old_bgn = _price_from_text(old_el.text(strip=True) if old_el else "")
     new_bgn = _price_from_text(price_el.text(strip=True) if price_el else "")
+
+    # --- Label (icon flag)
+    # Example HTML: <div class="info-icon-p promo"></div>
+    label_text = None
+    icon = card.css_first("div.info-icon-p")
+    if icon:
+        classes = (icon.attributes.get("class") or "").lower()
+        # map known modifiers to readable labels
+        if "promo" in classes:
+            label_text = "Промо"
+        elif "new" in classes:
+            label_text = "Ново"
+        elif "top" in classes or "hit" in classes:
+            label_text = "Топ"
+        else:
+            # generic fallback if they add new variants
+            label_text = "Промо"
 
     data = None
     if (new_bgn is not None) or (old_bgn is not None):
@@ -192,6 +211,7 @@ def _parse_search_card(html: str) -> Tuple[Optional[dict], Optional[str]]:
             "regular_price": old_bgn if old_bgn is not None else new_bgn,
             "promo_price": new_bgn if old_bgn is not None else None,
             "url": pdp_link,
+            "label": label_text,  # <<< NEW
         }
     return data, pdp_link
 
@@ -287,7 +307,6 @@ class MashiniBgScraper(BaseScraper):
             item_number = (getattr(product, "item_number", None) or "").strip() or None
             brand = (getattr(product, "brand", None) or "").strip() or None
             if item_number:
-                # Use the same search endpoint as auto-match
                 query = item_number if not brand else f"{item_number} {brand}"
                 used = "item_number"
 
@@ -306,8 +325,9 @@ class MashiniBgScraper(BaseScraper):
         regular = (parsed or {}).get("regular_price")
         promo = (parsed or {}).get("promo_price")
         url = (parsed or {}).get("url") or pdp_link or search_url
+        label_text = (parsed or {}).get("label")  # <<< NEW
 
-        # PDP fallback if prices missing
+        # PDP fallback if prices missing (label is only on the grid icon, so we keep what we have)
         if (regular is None and promo is None) and pdp_link:
             async with self._sem:
                 await asyncio.sleep(random.uniform(JITTER_MIN, JITTER_MAX))
@@ -319,8 +339,6 @@ class MashiniBgScraper(BaseScraper):
             if p2 is not None: promo = p2
             url = pdp_link
 
-        # Keep any provided identifiers; if we searched by barcode, keep it;
-        # if we searched by item_number there may be no stable SKU/EAN to store here.
         final_sku = (getattr(match, "competitor_sku", None) or "").strip() or None
         final_bar = (getattr(match, "competitor_barcode", None) or "").strip() or (query if used == "barcode" else None)
 
@@ -331,4 +349,5 @@ class MashiniBgScraper(BaseScraper):
             name=name,
             regular_price=regular,
             promo_price=promo,
+            label=label_text,  # <<< NEW (goes into PriceSnapshot.competitor_label via your save code)
         )

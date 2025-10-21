@@ -1,5 +1,4 @@
-// comparison.js — stacked old/new price; Praktiker label inline next to arrow in same cell
-// Keeps Email + Export buttons and all existing filters/controls intact.
+// comparison.js — stacked price with consistent alignment; Praktiker label inline
 import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
 
 // ---------------- DOM ----------------
@@ -78,7 +77,7 @@ let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
 let lastTag  = "";
 
-// ---------------- CSS (spinner, highlights, stacked price with inline badge) ----------------
+// ---------------- CSS (spinner, highlights, price grid, badge, alignment) ----------------
 (function injectCSS(){
   if (document.getElementById("compare-extra-css")) return;
   const s = document.createElement("style");
@@ -87,26 +86,34 @@ let lastTag  = "";
     @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
     .spin { animation: spin .9s linear infinite }
     .compare-img{max-height:48px;max-width:80px;border-radius:6px}
-    td.green{ background:rgba(22,163,74,.15) !important }
+    td.green{ background:rgba(22,163,74,.14) !important }
     td.red{ background:rgba(220,38,38,.12) !important }
 
-    /* Stacked price: old (top, crossed) + new (bottom, bold) */
+    /* Two-row grid ensures perfect alignment across all cells */
     .price-wrap{
-      display:flex; flex-direction:column; align-items:center; justify-content:center;
-      line-height:1.15; text-align:center; white-space:nowrap;
-      font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      display:grid;
+      grid-template-rows: 14px 22px;   /* top: old, bottom: current+icons */
+      align-items:center;
+      justify-items:center;
+      row-gap:2px;
+      min-height: 44px;                /* consistent cell height */
+      line-height:1.1;
+      text-align:center;
+      white-space:nowrap;
       font-variant-numeric: tabular-nums;
+      font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", "Apple Color Emoji", "Segoe UI Emoji";
     }
-    .price-old{font-size:12px;color:#93a1c6;text-decoration:line-through;opacity:.9}
-    .price-line{display:inline-flex; align-items:center; gap:6px;}
-    .price-new{font-weight:800}
-    .price-link{ text-decoration:none }
-
-    /* Tiny inline badge (label) */
+    /* Old price row (always occupies a row; may be hidden to keep height) */
+    .price-old{ font-size:11px; color:#9aa3b2; text-decoration:line-through; }
+    .price-old.hidden{ visibility:hidden; } /* keeps row height without showing */
+    /* Current price line (price + arrow + badge) */
+    .price-line{ display:inline-flex; align-items:center; gap:6px; }
+    .price-new{ font-weight:800; font-size:15px; letter-spacing:.2px; }
+    .price-link{ text-decoration:none; font-size:12px; line-height:1; }
     .price-badge{
-      font-size:11px; font-weight:700; letter-spacing:.3px;
+      font-size:10px; font-weight:700; letter-spacing:.3px;
       border:1px solid var(--border); border-radius:999px;
-      padding:2px 6px;
+      padding:1px 6px;
       background:#fff1e2; color:#8d4a12;
     }
   `;
@@ -147,7 +154,7 @@ function toast(msg, type="ok") {
   setTimeout(() => { try{wrap.removeChild(box);}catch{} }, 2200);
 }
 
-// ---------------- Utils (effective price + unified cell) ----------------
+// ---------------- Utils ----------------
 function resetHead(cols) {
   thead.innerHTML = "";
   const tr = document.createElement("tr");
@@ -190,17 +197,16 @@ function abbrLabel(lbl) {
     "В брошура": "БР",
   };
   if (map[s]) return map[s];
-  // default: initial letters
   return s.split(/\s+/).map(w => w[0]).join("").toUpperCase().slice(0, 3);
 }
 
-// ---- Read label ONLY from competitor_label to match your DB/API ----
+// Read label from competitor_label
 function getRowLabel(row) {
   const v = row && row.competitor_label;
   return (typeof v === "string" && v.trim()) ? v.trim() : null;
 }
 
-// unified price block (stacked old/new; label inline with arrow on the new-price line)
+// unified price block (stacked; consistent height; label inline with arrow)
 function priceCellHTML(promo, regular, url=null, labelText=null) {
   const eff = effective(promo, regular);
   const showOld = (toNum(regular) !== null && toNum(promo) !== null && toNum(promo) < toNum(regular));
@@ -208,9 +214,11 @@ function priceCellHTML(promo, regular, url=null, labelText=null) {
   const newStr  = fmtPlain(eff);
   const link = url ? `<a class="price-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">↗</a>` : "";
   const badge = labelText ? `<span class="price-badge" title="${escapeHtml(labelText)}">${escapeHtml(abbrLabel(labelText))}</span>` : "";
+  // Always render an "old" line; hide it when not used to keep row height the same
+  const oldEl = `<span class="price-old${showOld ? "" : " hidden"}">${oldStr || "&nbsp;"}</span>`;
   return `
     <div class="price-wrap">
-      ${showOld ? `<span class="price-old">${oldStr}</span>` : ``}
+      ${oldEl}
       <span class="price-line">
         <span class="price-new">${newStr}</span>
         ${link}
@@ -231,7 +239,7 @@ function classForEffective(valEff, allEff) {
   return "";
 }
 
-// ---- Matching-style brand helpers (exact same normalization) ----
+// ---- Matching-style brand helpers ----
 const normBrand = (s) => (s || "").toLowerCase().replace(/[.\s]/g, "");
 function currentBrandFilter() {
   const raw = (brandSelect.value || brandInput.value || "").trim();
@@ -284,7 +292,7 @@ async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null,
   return r.json();
 }
 
-// ---------------- Pivot (All sites) — keep promo+regular and praktiker label ----------------
+// ---------------- Pivot (All sites) ----------------
 function pivotAll(flatRows) {
   const map = new Map();
   for (const r of flatRows) {
@@ -301,8 +309,8 @@ function pivotAll(flatRows) {
         praktis_promo:   toNum(r.product_price_promo),
 
         praktiker_regular: null, praktiker_promo: null, praktiker_url: null, praktiker_label: null,
-        mrbricolage_regular: null, mrbricolage_promo: null, mrbricolage_url: null,
-        mashinibg_regular: null, mashinibg_promo: null, mashinibg_url: null,
+        mrbricolage_regular: null, mrbricolage_promo: null, mrbricolage_url: null, mrbricolage_label: null,
+        mashinibg_regular: null, mashinibg_promo: null, mashinibg_url: null, mashinibg_label: null,
       });
     }
     const agg = map.get(sku);
@@ -313,11 +321,13 @@ function pivotAll(flatRows) {
 
     if (site.includes("praktiker")) {
       agg.praktiker_regular = compReg; agg.praktiker_promo = compPro; agg.praktiker_url = url;
-      agg.praktiker_label = getRowLabel(r); // ONLY competitor_label
+      agg.praktiker_label = getRowLabel(r);
     } else if (site.includes("bricol")) {
       agg.mrbricolage_regular = compReg; agg.mrbricolage_promo = compPro; agg.mrbricolage_url = url;
+      agg.mrbricolage_label   = getRowLabel(r);
     } else if (site.includes("mashin") || site === "mashinibg") {
       agg.mashinibg_regular = compReg; agg.mashinibg_promo = compPro; agg.mashinibg_url = url;
+      agg.mashinibg_label   = getRowLabel(r);
     }
   }
   return Array.from(map.values());
@@ -346,12 +356,16 @@ function statusAll(p) {
   return "equal";
 }
 
-// ---------------- Renderers (stacked price + Praktiker inline label) ----------------
 function renderSingle(rows, site, assetsBySku) {
-  const headers = site === "praktiker" ? [
+  const siteKey = (site || "").toLowerCase();
+  const isPrak  = siteKey.includes("praktiker");
+  const isMash  = siteKey.includes("mashin");
+  const isBric  = siteKey.includes("bricol");
+
+  const headers = isPrak ? [
       "Praktis Code","Image","Praktis Name","Praktiker Code","Praktiker Name",
       "Praktis Price","Praktiker Price",
-    ] : site === "mrbricolage" ? [
+    ] : siteKey.includes("bricol") ? [
       "Praktis Code","Image","Praktis Name","MrBricolage Code","MrBricolage Name",
       "Praktis Price","MrBricolage Price",
     ] : [
@@ -376,8 +390,8 @@ function renderSingle(rows, site, assetsBySku) {
     const clsOur  = classForEffective(ourEff,   [ourEff, theirEff]);
     const clsComp = classForEffective(theirEff, [ourEff, theirEff]);
 
-    // Praktiker label from exact competitor_label field
-    const competitorLabel = (site === "praktiker") ? getRowLabel(r) : null;
+    // show label for Praktiker and Mashini (any code containing "mashin")
+    const competitorLabel = (isPrak || isMash || isBric) ? getRowLabel(r) : null;
 
     return `
       <tr>
@@ -431,8 +445,8 @@ function renderAllPage(pivotPage, assetsBySku) {
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
         ${cell(p.praktis_promo,      p.praktis_regular,      null,            clsP)}
         ${cell(p.praktiker_promo,    p.praktiker_regular,    p.praktiker_url, clsK, p.praktiker_label || null)}
-        ${cell(p.mrbricolage_promo,  p.mrbricolage_regular,  p.mrbricolage_url, clsM)}
-        ${cell(p.mashinibg_promo,    p.mashinibg_regular,    p.mashinibg_url, clsMash)}
+        ${cell(p.mrbricolage_promo,  p.mrbricolage_regular,  p.mrbricolage_url, clsM, p.mrbricolage_label || null)}
+        ${cell(p.mashinibg_promo,    p.mashinibg_regular,    p.mashinibg_url, clsMash, p.mashinibg_label || null)}
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
