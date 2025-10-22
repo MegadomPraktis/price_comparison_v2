@@ -18,12 +18,15 @@ from app.routers import matching as r_matching
 from app.routers import comparison as r_comparison
 from app.routers import erp as r_erp
 from app.routers import tags as r_tags
-from app.routers import praktis_assets as r_assets   # <-- NEW
+from app.routers import praktis_assets as r_assets   # existing
 from app.routers import email as r_email
 from app.routers import export as r_export
+# NEW: analytics router
+from app.routers import analytics as r_analytics
+
 from app.registry import register_default_scrapers
 
-app = FastAPI(title="Price Compare Service (MSSQL)", version="0.4.0")
+app = FastAPI(title="Price Compare Service (MSSQL)", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,37 +46,32 @@ app.include_router(r_matching.router, prefix="/api", tags=["matching"])
 app.include_router(r_comparison.router, prefix="/api", tags=["comparison"])
 app.include_router(r_erp.router, prefix="/api", tags=["erp"])
 app.include_router(r_tags.router, prefix="/api", tags=["tags"])
-app.include_router(r_assets.router, prefix="/api", tags=["praktis-assets"])  # <-- NEW
+app.include_router(r_assets.router, prefix="/api", tags=["praktis-assets"])
 app.include_router(r_email.router, prefix="/api", tags=["email"])
 app.include_router(r_export.router, prefix="/api", tags=["export"])
+# NEW
+app.include_router(r_analytics.router, prefix="/api", tags=["analytics"])
 
 @app.on_event("startup")
 def startup():
     # 1) Ensure tables exist
-    init_db()  # sync; creates tables if missing
+    init_db()
     # 2) Register scrapers
     register_default_scrapers()
-    # 3) Seed default site once
+    # 3) Seed competitor sites we rely on, including 'praktis' (for orange line)
     from sqlalchemy import select
     from app.models import CompetitorSite
     with get_session() as session:
-        site = session.execute(select(CompetitorSite).where(CompetitorSite.code == "praktiker")).scalars().first()
-        if not site:
-            session.add(CompetitorSite(code="praktiker", name="Praktiker", base_url="https://praktiker.bg"))
-            session.commit()
-
-        # Mr. Bricolage
-        mrb = session.execute(select(CompetitorSite).where(CompetitorSite.code == "mrbricolage")).scalars().first()
-        if not mrb:
-            session.add(CompetitorSite(code="mrbricolage", name="Mr. Bricolage", base_url="https://mr-bricolage.bg"))
-            session.commit()
-
-        # seed OnlineMashini (new)
-        mash = session.execute(select(CompetitorSite).where(CompetitorSite.code == "mashinibg")).scalars().first()
-        if not mash:
-            session.add(CompetitorSite(code="mashinibg", name="OnlineMashini", base_url="https://www.onlinemashini.bg"))
-            session.commit()
-
+        def ensure(code, name, base):
+            exists = session.execute(select(CompetitorSite).where(CompetitorSite.code == code)).scalars().first()
+            if not exists:
+                session.add(CompetitorSite(code=code, name=name, base_url=base))
+                session.commit()
+        ensure("praktiker",    "Praktiker",     "https://praktiker.bg")
+        ensure("mrbricolage",  "Mr. Bricolage", "https://mr-bricolage.bg")
+        ensure("mashinibg",    "OnlineMashini", "https://www.onlinemashini.bg")
+        # NEW: treat our own prices as a "site" so we can draw an orange line
+        ensure("praktis",      "Praktis",       "https://praktis.bg")
 
 @app.get("/", response_class=HTMLResponse)
 def root():

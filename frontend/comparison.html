@@ -25,26 +25,43 @@
     <button id="loadLatest">Load Latest (DB)</button>
     <button id="scrapeNow">Scrape Now</button>
     <input id="compareLimit" type="number" value="200" min="1" max="2000" />
-    <!-- NEW: Tag filter -->
     <select id="tagFilter"></select>
-    <button id="exportExcel">Export current view</button> <!-- NEW -->
+    <button id="exportExcel">Export current view</button>
   </div>
+
   <table id="compareTable">
     <thead>
-    <tr>
-      <th>Praktis Code</th>
-      <th>Praktiker Code</th>
-      <th>Praktis Name</th>
-      <th>Praktiker Name</th>
-      <!-- unified price cells (promo bold, old crossed) -->
-      <th>Praktis Price</th>
-      <th>Praktiker Price</th>
-    </tr>
+      <tr>
+        <!-- headers are dynamically replaced by comparison.js -->
+        <th>Praktis Code</th>
+        <th>Praktiker Code</th>
+        <th>Praktis Name</th>
+        <th>Praktiker Name</th>
+        <th>Praktis Price</th>
+        <th>Praktiker Price</th>
+      </tr>
     </thead>
     <tbody></tbody>
   </table>
 </main>
 
+<!-- Analytics modal -->
+<div id="analyticsModal" aria-hidden="true" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:10000;">
+  <div style="width:min(980px, 94vw);max-height:88vh;overflow:auto;border:1px solid var(--border);border-radius:14px;background:var(--card);box-shadow:0 24px 80px rgba(0,0,0,.45);">
+    <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card);z-index:1">
+      <div id="anTitle" style="font-weight:700">Analytics</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="anClose" title="Close">✕</button>
+      </div>
+    </div>
+    <div style="padding:12px 14px;display:flex;flex-direction:column;gap:14px">
+      <div id="anHistory"></div>
+      <div id="anChart"></div>
+    </div>
+  </div>
+</div>
+
 <script type="module" src="./comparison.js"></script>
+<script type="module" src="./analytics.js"></script>
 </body>
 </html>

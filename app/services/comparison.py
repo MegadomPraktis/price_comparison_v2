@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Tuple
 
-from sqlalchemy import select, func, desc, or_
+from sqlalchemy import select, func, desc, or_, and_, delete
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -180,15 +180,60 @@ def build_rows_from_snapshots(
     return rows
 
 
+# ---------------- NEW: retention helper ----------------
+def _enforce_snapshot_retention(session: Session, site_id: int, key_sku: Optional[str], key_barcode: Optional[str]) -> None:
+    """
+    Keep snapshots for a (site, key) for up to 6 months OR max 10 newest.
+    'key' prefers competitor_sku; falls back to competitor_barcode.
+    """
+    key = key_sku or key_barcode
+    if not key:
+        return
+
+    cutoff = datetime.utcnow() - timedelta(days=183)
+
+    # delete older than 6 months
+    session.execute(
+        delete(PriceSnapshot).where(
+            PriceSnapshot.site_id == site_id,
+            or_(PriceSnapshot.competitor_sku == key, PriceSnapshot.competitor_barcode == key),
+            PriceSnapshot.ts < cutoff,
+        )
+    )
+    session.flush()
+
+    # ensure only 10 newest remain
+    rows = session.execute(
+        select(PriceSnapshot.id)
+        .where(
+            PriceSnapshot.site_id == site_id,
+            or_(PriceSnapshot.competitor_sku == key, PriceSnapshot.competitor_barcode == key),
+        )
+        .order_by(PriceSnapshot.ts.desc())
+    ).scalars().all()
+
+    if len(rows) > 10:
+        to_delete = rows[10:]
+        session.execute(delete(PriceSnapshot).where(PriceSnapshot.id.in_(to_delete)))
+        session.flush()
+
+
 async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int = 200) -> int:
     """
     Iterate latest N matches for this site and persist snapshots.
+    Also records a 'praktis' snapshot for our own price for the same product,
+    and enforces retention (6 months OR 10 newest) per (site, sku/barcode).
     """
     site = session.execute(
         select(CompetitorSite).where(CompetitorSite.code == scraper.site_code)
     ).scalars().first()
     if not site:
         return 0
+
+    # we also want to record our own price history as site 'praktis'
+    praktis_site = session.execute(
+        select(CompetitorSite).where(CompetitorSite.code == "praktis")
+    ).scalars().first()
 
     qmatch = (
         select(Match, Product)
@@ -206,6 +251,7 @@ async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int
         if not detail:
             continue
 
+        # competitor snapshot
         snap = PriceSnapshot(
             ts=datetime.utcnow(),
             site_id=site.id,
@@ -215,10 +261,92 @@ async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int
             regular_price=detail.regular_price,
             promo_price=detail.promo_price,
             url=detail.url,
-            competitor_label=getattr(detail, "label", None),  # <<< already present
+            competitor_label=getattr(detail, "label", None),
         )
         session.add(snap)
+        _enforce_snapshot_retention(session, site.id, snap.competitor_sku, snap.competitor_barcode)
         written += 1
+
+        # our own snapshot (praktis) for analytics orange line
+        if praktis_site:
+            ours = PriceSnapshot(
+                ts=datetime.utcnow(),
+                site_id=praktis_site.id,
+                competitor_sku=p.sku,
+                competitor_barcode=p.barcode,
+                name=p.name,
+                regular_price=p.price_regular,
+                promo_price=p.price_promo,
+                url=None,
+                competitor_label=None,
+            )
+            session.add(ours)
+            _enforce_snapshot_retention(session, praktis_site.id, ours.competitor_sku, ours.competitor_barcode)
+
     if written:
         session.commit()
     return written
+
+
+# ---------------- NEW: analytics history helper ----------------
+def get_history_for_product(session: Session, product_sku: str) -> Tuple[Optional[Product], Dict[str, List[PriceSnapshot]]]:
+    """
+    Returns product + dict(site_code -> snapshots within last 6 months) for:
+    - praktis (our own)
+    - matched competitor sites for this product
+    """
+    prod = session.execute(select(Product).where(Product.sku == product_sku)).scalars().first()
+    if not prod:
+        return None, {}
+
+    cutoff = datetime.utcnow() - timedelta(days=183)
+    sites = {s.code: s for s in session.execute(select(CompetitorSite)).scalars().all()}
+    out: Dict[str, List[PriceSnapshot]] = {}
+
+    # praktis series (by our sku/barcode)
+    if "praktis" in sites:
+        s = sites["praktis"]
+        snaps = session.execute(
+            select(PriceSnapshot)
+            .where(
+                PriceSnapshot.site_id == s.id,
+                or_(
+                    PriceSnapshot.competitor_sku == prod.sku,
+                    PriceSnapshot.competitor_barcode == prod.barcode,
+                ),
+                PriceSnapshot.ts >= cutoff,
+            )
+            .order_by(PriceSnapshot.ts.asc())
+        ).scalars().all()
+        if snaps:
+            out["praktis"] = snaps
+
+    # competitors by matches (only those actually matched)
+    for code in ("praktiker", "mrbricolage", "mashinibg"):
+        s = sites.get(code)
+        if not s:
+            continue
+        m = session.execute(
+            select(Match).where(Match.product_id == prod.id, Match.site_id == s.id)
+        ).scalars().first()
+        if not m:
+            continue
+
+        snaps = session.execute(
+            select(PriceSnapshot)
+            .where(
+                PriceSnapshot.site_id == s.id,
+                or_(
+                    and_(PriceSnapshot.competitor_sku.is_not(None),
+                         PriceSnapshot.competitor_sku == m.competitor_sku),
+                    and_(PriceSnapshot.competitor_barcode.is_not(None),
+                         PriceSnapshot.competitor_barcode == m.competitor_barcode),
+                ),
+                PriceSnapshot.ts >= cutoff,
+            )
+            .order_by(PriceSnapshot.ts.asc())
+        ).scalars().all()
+        if snaps:
+            out[code] = snaps
+
+    return prod, out

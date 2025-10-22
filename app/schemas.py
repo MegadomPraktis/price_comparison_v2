@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from enum import Enum
 
-
 class SiteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -17,7 +16,7 @@ class SiteCreate(BaseModel):
     name: str
     base_url: str
 
-# --- NEW: Tag schemas
+# Tags
 class TagOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -33,6 +32,7 @@ class TagAssign(BaseModel):
 class TagsByProductsRequest(BaseModel):
     product_ids: List[int]
 
+# Products & matching
 class ProductIn(BaseModel):
     sku: str
     barcode: Optional[str] = None
@@ -70,10 +70,10 @@ class MatchOut(BaseModel):
     product_sku: str
     product_barcode: Optional[str] = None
     product_name: str
-    # NEW: enrich matching grid with link + name (when known)
     competitor_name: Optional[str] = None
     competitor_url: Optional[str] = None
 
+# Comparison
 class ComparisonRowOut(BaseModel):
     product_sku: str
     product_barcode: Optional[str]
@@ -89,13 +89,12 @@ class ComparisonRowOut(BaseModel):
     competitor_url: Optional[str]
     competitor_label: Optional[str] = None
 
-# NEW: assets
 class ProductAssetOut(BaseModel):
-  sku: str
-  product_url: Optional[str] = None
-  image_url: Optional[str] = None
+    sku: str
+    product_url: Optional[str] = None
+    image_url: Optional[str] = None
 
-
+# Email/export enums (existing)
 class PriceSubset(str, Enum):
     all = "all"
     changed = "changed"
@@ -128,3 +127,23 @@ class WeeklySchedule(BaseModel):
     fri: str | None = "10:00"
     sat: str | None = None
     sun: str | None = None
+
+# Local response models (kept here to avoid touching app/schemas.py)
+class AnalyticsPointOut(BaseModel):
+    ts: datetime
+    regular_price: Optional[float] = None
+    promo_price: Optional[float] = None
+    effective_price: Optional[float] = None  # promo if present else regular
+    label: Optional[str] = None              # WHY price is set (promo/brochure/campaign/etc.)
+
+class AnalyticsSeriesOut(BaseModel):
+    site_code: str
+    site_name: str
+    color: str
+    points: List[AnalyticsPointOut]
+
+class AnalyticsHistoryOut(BaseModel):
+    product_sku: str
+    product_name: Optional[str] = None
+    product_barcode: Optional[str] = None
+    series: List[AnalyticsSeriesOut]
