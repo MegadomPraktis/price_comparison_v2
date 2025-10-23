@@ -280,8 +280,8 @@ tr.focus-row td{
   background: repeating-linear-gradient(45deg, #fff8f1, #fff8f1 6px, #fff 6px, #fff 12px);
 }
 
-td.red{ background:rgba(220,38,38,.09); }
-td.green{ background:rgba(22,163,74,.12); }
+td.red{ background:rgba(220,38,38,0.09); }
+td.green{ background:rgba(22,163,74,0.12); }
 td.red, td.green{ transition: background .2s ease; }
 
 /* Links inside cells */
@@ -461,3 +461,13 @@ button.is-loading::after {
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- Force light table headers everywhere (fixes Email page legacy colors) --- */
+table thead th,
+.table thead th,
+.data-table thead th,
+section thead th {
+  background: linear-gradient(180deg, #fafafa, #f3f4f6) !important;
+  color: #354158 !important;
+  border-bottom: 1px solid var(--border-strong) !important;
+}

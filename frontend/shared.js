@@ -55,14 +55,7 @@ export function fmtPrice(v) {
 // --- NEW: small badge factory
 export function makeTagBadge(tag, onRemove) {
   const span = document.createElement("span");
-  span.style.display = "inline-flex";
-  span.style.alignItems = "center";
-  span.style.gap = "4px";
-  span.style.padding = "2px 8px";
-  span.style.border = "1px solid var(--border)";
-  span.style.borderRadius = "999px";
-  span.style.fontSize = "12px";
-  span.style.background = "#141a2b";
+  span.className = "chip";
   span.textContent = tag.name;
   if (onRemove) {
     const x = document.createElement("button");
