@@ -70,6 +70,19 @@ if (!priceSelect) {
   toolbar?.appendChild(priceSelect);
 }
 
+// --- Praktis presence dropdown (All / On site / Not on site)
+let praktisPresence = document.getElementById("praktisPresence");
+if (!praktisPresence) {
+  praktisPresence = document.createElement("select");
+  praktisPresence.id = "praktisPresence";
+  praktisPresence.innerHTML = `
+    <option value="">All products</option>
+    <option value="present">Products on Praktis website</option>
+    <option value="missing">Products NOT on Praktis website</option>
+  `;
+  toolbar?.appendChild(praktisPresence);
+}
+
 // ---------------- State ----------------
 let page = 1;
 const PER_PAGE = 50;
@@ -177,6 +190,12 @@ function fmtPlain(n) {
   const v = toNum(n);
   if (v === null) return "N/A";
   return v.toFixed(2);
+}
+
+function isOnPraktis(url) {
+  if (!url) return false;
+  const u = String(url).trim();
+  return u.startsWith("https://praktis.bg/") && u !== "https://praktis.bg/";
 }
 
 // effective price = promo if present else regular
@@ -357,6 +376,14 @@ function statusAll(p) {
 }
 
 function renderSingle(rows, site, assetsBySku) {
+  const presenceMode = (document.getElementById("praktisPresence")?.value || "");
+    if (presenceMode) {
+      rows = rows.filter(r => {
+        const a = assetsBySku[r.product_sku] || {};
+        const onSite = isOnPraktis(a.product_url || "");
+        return presenceMode === "present" ? onSite : !onSite;
+      });
+    }
   const siteKey = (site || "").toLowerCase();
   const isPrak  = siteKey.includes("praktiker");
   const isMash  = siteKey.includes("mashin");
@@ -413,6 +440,14 @@ function renderSingle(rows, site, assetsBySku) {
 }
 
 function renderAllPage(pivotPage, assetsBySku) {
+    const presenceMode = (document.getElementById("praktisPresence")?.value || "");
+    if (presenceMode) {
+      pivotPage = pivotPage.filter(p => {
+        const a = assetsBySku[p.code] || {};
+        const onSite = isOnPraktis(a.product_url || "");
+        return presenceMode === "present" ? onSite : !onSite;
+      });
+    }
   resetHead([
     "Praktis Code","Image","Praktis Name",
     "Praktis Price","Praktiker Price","MrBricolage Price","OnlineMashini Price",
@@ -573,6 +608,11 @@ async function init() {
   // Price status
   priceSelect.addEventListener("change", () => { page = 1; loadCore(false); });
 
+  // Praktis presence filter
+  (document.getElementById("praktisPresence"))?.addEventListener("change", () => {
+    page = 1; loadCore(false);
+  });
+
   // Limit default (50 per page)
   if (compareLimit) compareLimit.value = "50";
 
@@ -615,6 +655,20 @@ async function init() {
     if (price_status) params.set("price_status", price_status);
     if (typeof page !== "undefined") params.set("page", String(page));
     params.set("per_page", String(per_page));
+
+    // --- Praktis presence dropdown (All / On site / Not on site)
+    let praktisPresence = document.getElementById("praktisPresence");
+    if (!praktisPresence) {
+      praktisPresence = document.createElement("select");
+      praktisPresence.id = "praktisPresence";
+      praktisPresence.innerHTML = `
+        <option value="">All products</option>
+        <option value="present">Products on Praktis website</option>
+        <option value="missing">Products NOT on Praktis website</option>
+      `;
+      toolbar?.appendChild(praktisPresence);
+    }
+    praktisPresence.addEventListener("change", () => { page = 1; loadCore(false); });
 
     window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
   }

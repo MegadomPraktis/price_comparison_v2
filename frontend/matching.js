@@ -112,6 +112,20 @@ function initMatchSelect() {
 }
 initMatchSelect();
 
+// --- Praktis presence dropdown (All / On site / Not on site)
+let praktisPresence = document.getElementById("praktisPresence");
+if (!praktisPresence) {
+  praktisPresence = document.createElement("select");
+  praktisPresence.id = "praktisPresence";
+  praktisPresence.innerHTML = `
+    <option value="">All products</option>
+    <option value="present">Products on Praktis website</option>
+    <option value="missing">Products NOT on Praktis website</option>
+  `;
+  toolbar?.appendChild(praktisPresence);
+}
+praktisPresence.addEventListener("change", () => { page = 1; loadProducts(); });
+
 // state for matched/unmatched
 let matchState = ""; // "", "matched", "unmatched"
 
@@ -154,6 +168,13 @@ matchSelect.addEventListener("change", () => {
   matchState = matchSelect.value || "";
   page = 1; loadProducts();
 });
+
+function isOnPraktis(url) {
+  if (!url) return false;
+  const u = String(url).trim();
+  // On-site if it starts with the domain AND isn't the bare homepage
+  return u.startsWith("https://praktis.bg/") && u !== "https://praktis.bg/";
+}
 
 // =========================
 // Praktis assets (URL + Image) helpers (kept)
@@ -254,8 +275,15 @@ async function loadProducts() {
 // =========================
 async function renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku = {}) {
   const ALL_TAGS = await getAllTagsCached();   // ← ONE list used for all rows
+  const presenceMode = (document.getElementById("praktisPresence")?.value || "");
   tbodyMatch.innerHTML = "";
   for (const p of products) {
+    if (presenceMode) {
+        const a = assetsBySku[p.sku] || null;
+        const onSite = isOnPraktis(a?.product_url || "");
+        if ((presenceMode === "present" && !onSite) || (presenceMode === "missing" && onSite)) {
+          continue; // skip this row
+    }}
     const m = matchesByProductId[p.id] || null;
     const prodTags = tagsByProductId[p.id] || [];
     const asset = assetsBySku[p.sku] || null;
