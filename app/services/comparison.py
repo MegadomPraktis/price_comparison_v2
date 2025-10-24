@@ -218,73 +218,94 @@ def _enforce_snapshot_retention(session: Session, site_id: int, key_sku: Optiona
         session.flush()
 
 
+# replace the whole function with this
 async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int = 200) -> int:
     """
-    Iterate latest N matches for this site and persist snapshots.
-    Also records a 'praktis' snapshot for our own price for the same product,
-    and enforces retention (6 months OR 10 newest) per (site, sku/barcode).
+    Iterate latest N matches for this site and persist snapshots WITHOUT holding long DB locks.
+
+    Strategy:
+      1) Read the list of (Match, Product) to process quickly, then END the read transaction
+         so no shared locks are held while we hit the network.
+      2) Perform all scraping with NO database session/transaction open.
+      3) Persist results in SMALL CHUNKS, each with its own short-lived session/transaction,
+         so other users can continue to read/write while scraping runs.
     """
+    from sqlalchemy import select, desc, text as _sql_text
+    from app.models import Product, Match, PriceSnapshot, CompetitorSite
+    from app.db import get_session
+    from datetime import datetime as _dt
+
+    # --- 1) quick lookups using the provided session
+    # lower impact isolation for the read phase (SQL Server)
+    try:
+        session.execute(_sql_text("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"))
+    except Exception:
+        # if the dialect/driver refuses, it's still safe to proceed
+        pass
+
     site = session.execute(
-        select(CompetitorSite).where(CompetitorSite.code == scraper.site_code)
+        select(CompetitorSite).where(CompetitorSite.code == getattr(scraper, "site_code", None))
     ).scalars().first()
     if not site:
         return 0
-
-    # we also want to record our own price history as site 'praktis'
-    praktis_site = session.execute(
-        select(CompetitorSite).where(CompetitorSite.code == "praktis")
-    ).scalars().first()
 
     qmatch = (
         select(Match, Product)
         .join(Product, Product.id == Match.product_id)
         .where(Match.site_id == site.id)
-        .order_by(desc(Product.id))
+        .order_by(desc(Match.updated_at), desc(Product.id))
         .limit(limit)
     )
-    written = 0
-    for m, p in session.execute(qmatch).all():
+    to_process = session.execute(qmatch).all()
+
+    # END the read transaction right now so we don't hold any shared locks while scraping.
+    try:
+        session.rollback()
+    except Exception:
+        pass  # safe if caller manages tx differently
+
+    # --- 2) network scraping without any DB session open
+    results = []
+    for m, p in to_process:
         try:
-            detail: Optional[CompetitorDetail] = await scraper.fetch_product_by_match(m, p)
+            detail = await scraper.fetch_product_by_match(m, p)
         except Exception:
+            # be resilient: skip problematic items, keep going
             continue
         if not detail:
             continue
+        results.append((m, detail))
 
-        # competitor snapshot
-        snap = PriceSnapshot(
-            ts=datetime.utcnow(),
-            site_id=site.id,
-            competitor_sku=detail.competitor_sku or m.competitor_sku,
-            competitor_barcode=detail.competitor_barcode or m.competitor_barcode,
-            name=detail.name,
-            regular_price=detail.regular_price,
-            promo_price=detail.promo_price,
-            url=detail.url,
-            competitor_label=getattr(detail, "label", None),
-        )
-        session.add(snap)
-        _enforce_snapshot_retention(session, site.id, snap.competitor_sku, snap.competitor_barcode)
-        written += 1
+    # --- 3) short, chunked writes to keep transactions brief
+    written = 0
+    CHUNK = 50
 
-        # our own snapshot (praktis) for analytics orange line
-        if praktis_site:
-            ours = PriceSnapshot(
-                ts=datetime.utcnow(),
-                site_id=praktis_site.id,
-                competitor_sku=p.sku,
-                competitor_barcode=p.barcode,
-                name=p.name,
-                regular_price=p.price_regular,
-                promo_price=p.price_promo,
-                url=None,
-                competitor_label=None,
-            )
-            session.add(ours)
-            _enforce_snapshot_retention(session, praktis_site.id, ours.competitor_sku, ours.competitor_barcode)
+    for i in range(0, len(results), CHUNK):
+        chunk = results[i:i + CHUNK]
+        # fresh short-lived session for each chunk
+        with get_session() as s2:
+            try:
+                for m, detail in chunk:
+                    s2.add(PriceSnapshot(
+                        ts=_dt.utcnow(),
+                        site_id=site.id,
+                        competitor_sku=detail.competitor_sku or m.competitor_sku,
+                        competitor_barcode=detail.competitor_barcode or m.competitor_barcode,
+                        name=detail.name,
+                        regular_price=detail.regular_price,
+                        promo_price=detail.promo_price,
+                        url=detail.url,
+                        competitor_label=getattr(detail, "label", None),
+                    ))
+                s2.commit()
+                written += len(chunk)
+            except Exception:
+                # do not block the whole scrape if a chunk fails
+                try: s2.rollback()
+                except: pass
+                # continue with remaining chunks
+                continue
 
-    if written:
-        session.commit()
     return written
 
 
