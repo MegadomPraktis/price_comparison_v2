@@ -83,6 +83,181 @@ if (!praktisPresence) {
   toolbar?.appendChild(praktisPresence);
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   ALL-SITES COLUMNS PICKER (UI popover) — Praktis fixed; competitors toggle/reorder
+   ──────────────────────────────────────────────────────────────────────────── */
+const COLS_KEY = "compare_cols_v1";
+const ALL_COLS = ["praktiker","mrbricolage","mashinibg"];
+const COL_LABELS = {
+  praktiker:   "Praktiker",
+  mrbricolage: "MrBricolage",
+  mashinibg:   "OnlineMashini",
+};
+const COL_META = {
+  praktiker:   { promo: "praktiker_promo",   regular: "praktiker_regular",   url: "praktiker_url",   label: "praktiker_label" },
+  mrbricolage: { promo: "mrbricolage_promo", regular: "mrbricolage_regular", url: "mrbricolage_url", label: "mrbricolage_label" },
+  mashinibg:   { promo: "mashinibg_promo",   regular: "mashinibg_regular",   url: "mashinibg_url",   label: "mashinibg_label" },
+};
+function loadCols() {
+  try {
+    const raw = localStorage.getItem(COLS_KEY);
+    const arr = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(arr)) {
+      const valid = arr.filter(k => ALL_COLS.includes(k));
+      if (valid.length) return valid;
+    }
+  } catch {}
+  return [...ALL_COLS]; // default all on
+}
+function saveCols(order) {
+  try { localStorage.setItem(COLS_KEY, JSON.stringify(order)); } catch {}
+}
+let colOrder = loadCols();
+
+// Pretty popover UI
+let colWrap = document.getElementById("colWrap"); // NEW
+let colBtn  = document.getElementById("colBtn");
+let colMenu = document.getElementById("colMenu");
+(function ensureColMenu(){
+  if (!toolbar) return;
+  // Add a relative container so the popover positions nicely
+  toolbar.style.position = toolbar.style.position || "relative";
+
+  // NEW: wrapper to anchor menu below the button
+  if (!colWrap) {
+    colWrap = document.createElement("div");
+    colWrap.id = "colWrap";
+    colWrap.className = "col-wrap";
+    toolbar.appendChild(colWrap);
+  }
+
+  if (!colBtn) {
+    colBtn = document.createElement("button");
+    colBtn.id = "colBtn";
+    colBtn.className = "col-btn";
+    colBtn.type = "button";
+    colBtn.innerHTML = `Columns ▾`;
+    colWrap.appendChild(colBtn); // was toolbar.appendChild
+  } else {
+    // ensure inside wrapper
+    colWrap.appendChild(colBtn);
+  }
+
+  if (!colMenu) {
+    colMenu = document.createElement("div");
+    colMenu.id = "colMenu";
+    colMenu.className = "col-menu";
+    colMenu.style.display = "none";
+    colWrap.appendChild(colMenu); // was toolbar.appendChild
+  } else {
+    colWrap.appendChild(colMenu);
+  }
+  renderColMenu();
+})();
+function renderColMenu(){
+  if (!colMenu) return;
+  const enabled = new Set(colOrder);
+  // Menu order: enabled (in saved order) first, then disabled alphabetically
+  const keys = [...colOrder, ...ALL_COLS.filter(k => !enabled.has(k)).sort((a,b)=>COL_LABELS[a].localeCompare(COL_LABELS[b]))];
+
+  const rows = keys.map(k => {
+    const checked = enabled.has(k) ? "checked" : "";
+    const upDisabled   = enabled.has(k) && colOrder.indexOf(k) <= 0;
+    const downDisabled = enabled.has(k) && colOrder.indexOf(k) >= colOrder.length - 1;
+    return `
+      <div class="col-row" data-key="${k}">
+        <label class="col-left">
+          <input type="checkbox" ${checked} />
+          <span>${COL_LABELS[k]}</span>
+        </label>
+        <span class="col-actions">
+          <button class="col-up" ${(!enabled.has(k) || upDisabled) ? "disabled" : ""} title="Move up">↑</button>
+          <button class="col-dn" ${(!enabled.has(k) || downDisabled) ? "disabled" : ""} title="Move down">↓</button>
+        </span>
+      </div>`;
+  }).join("");
+
+  colMenu.innerHTML = `
+    <div class="col-title">Competitor columns</div>
+    ${rows || `<div class="muted">No columns selected</div>`}
+    <div class="col-footer">
+      <button class="col-all" type="button">Select all</button>
+      <button class="col-reset" type="button">Reset</button>
+    </div>
+  `;
+
+  // Wire events (keep popover open -> stopPropagation)
+  colMenu.querySelectorAll(".col-row input[type=checkbox]").forEach(inp=>{
+    inp.addEventListener("change", (e)=>{
+      e.stopPropagation(); // keep open
+      const key = e.target.closest(".col-row").dataset.key;
+      if (e.target.checked) {
+        if (!colOrder.includes(key)) colOrder.push(key);
+      } else {
+        colOrder = colOrder.filter(k => k !== key);
+      }
+      saveCols(colOrder);
+      renderColMenu();
+      page = 1; loadCore(false);
+    });
+  });
+  colMenu.querySelectorAll(".col-up").forEach(btn=>{
+    btn.addEventListener("click", (e)=>{
+      e.stopPropagation(); // keep open
+      const key = btn.closest(".col-row").dataset.key;
+      const i = colOrder.indexOf(key);
+      if (i > 0) {
+        const [m] = colOrder.splice(i,1);
+        colOrder.splice(i-1,0,m);
+        saveCols(colOrder);
+        renderColMenu();
+        page = 1; loadCore(false);
+      }
+    });
+  });
+  colMenu.querySelectorAll(".col-dn").forEach(btn=>{
+    btn.addEventListener("click", (e)=>{
+      e.stopPropagation(); // keep open
+      const key = btn.closest(".col-row").dataset.key;
+      const i = colOrder.indexOf(key);
+      if (i >= 0 && i < colOrder.length-1) {
+        const [m] = colOrder.splice(i,1);
+        colOrder.splice(i+1,0,m);
+        saveCols(colOrder);
+        renderColMenu();
+        page = 1; loadCore(false);
+      }
+    });
+  });
+  colMenu.querySelector(".col-all")?.addEventListener("click", (e)=>{
+    e.stopPropagation(); // keep open
+    colOrder = [...ALL_COLS];
+    saveCols(colOrder);
+    renderColMenu();
+    page = 1; loadCore(false);
+  });
+  colMenu.querySelector(".col-reset")?.addEventListener("click", (e)=>{
+    e.stopPropagation(); // keep open
+    colOrder = [...ALL_COLS];
+    saveCols(colOrder);
+    renderColMenu();
+    page = 1; loadCore(false);
+  });
+}
+// open/close popover
+colBtn?.addEventListener("click", (e)=>{
+  e.stopPropagation();
+  if (!colMenu) return;
+  colMenu.style.display = (colMenu.style.display === "none") ? "block" : "none";
+});
+// close on outside click
+document.addEventListener("click", (e)=>{
+  if (!colMenu || !colBtn) return;
+  if (colMenu.style.display === "none") return;
+  if (colMenu.contains(e.target) || colBtn.contains(e.target)) return;
+  colMenu.style.display = "none";
+});
+
 // ---------------- State ----------------
 let page = 1;
 const PER_PAGE = 50;
@@ -129,6 +304,45 @@ let lastTag  = "";
       padding:1px 6px;
       background:#fff1e2; color:#8d4a12;
     }
+
+    /* --- Columns popover --- */
+    .col-wrap{ position:relative; display:inline-block; } /* NEW */
+    .col-btn{
+      display:inline-flex; align-items:center; gap:.25rem;
+      padding:6px 10px; border-radius:10px; border:1px solid var(--border);
+      background:#fff; cursor:pointer; margin-left:.5rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    .col-btn:hover{ background:#f9fafb; }
+    .col-menu{
+      position:absolute;
+      top: calc(100% + 8px); /* sit right under the button */
+      left: 0;
+      background:#fff; border:1px solid var(--border); border-radius:12px;
+      box-shadow: 0 12px 24px rgba(0,0,0,.15);
+      padding:8px; width:240px; z-index:30;
+    }
+    .col-title{ font-weight:700; font-size:12px; color:#374151; padding:6px 6px 4px; }
+    .col-row{
+      display:flex; align-items:center; justify-content:space-between;
+      gap:8px; padding:6px 6px; border-radius:8px;
+    }
+    .col-row:hover{ background:#f5f7fb; }
+    .col-left{ display:flex; align-items:center; gap:.5rem; cursor:pointer; }
+    .col-left input{ width:16px; height:16px; }
+    .col-actions button{
+      border:1px solid var(--border); background:#fff; border-radius:8px;
+      padding:2px 8px; cursor:pointer;
+    }
+    .col-actions button:disabled{ opacity:.35; cursor:default; }
+    .col-footer{
+      display:flex; justify-content:space-between; gap:8px; padding:6px;
+    }
+    .col-footer button{
+      border:1px solid var(--border); background:#fff; border-radius:10px;
+      padding:6px 10px; cursor:pointer;
+    }
+    .muted{ font-size:12px; color:#6b7280; padding:6px; }
   `;
   document.head.appendChild(s);
 })();
@@ -448,23 +662,35 @@ function renderAllPage(pivotPage, assetsBySku) {
         return presenceMode === "present" ? onSite : !onSite;
       });
     }
-  resetHead([
-    "Praktis Code","Image","Praktis Name",
-    "Praktis Price","Praktiker Price","MrBricolage Price","OnlineMashini Price",
-  ]);
+
+  // ----- Dynamic headers (Praktis fixed + selected competitor columns in order)
+  const activeCols = colOrder.slice(); // already filtered by selection
+  const headers = [
+    "Praktis Code","Image","Praktis Name","Praktis Price",
+    ...activeCols.map(k => `${COL_LABELS[k]} Price`)
+  ];
+  resetHead(headers);
 
   const html = pivotPage.map(p => {
     const effP   = effective(p.praktis_promo, p.praktis_regular);
-    const effK   = effective(p.praktiker_promo, p.praktiker_regular);
-    const effM   = effective(p.mrbricolage_promo, p.mrbricolage_regular);
-    const effMash= effective(p.mashinibg_promo, p.mashinibg_regular);
 
-    const allEff = [effP, effK, effM, effMash];
+    // Build competitor entries in selected order
+    const compEntries = activeCols.map(key => {
+      const meta = COL_META[key];
+      return {
+        key,
+        eff:   effective(p[meta.promo], p[meta.regular]),
+        promo: p[meta.promo],
+        reg:   p[meta.regular],
+        url:   p[meta.url],
+        label: p[meta.label] || null,
+      };
+    });
 
-    const clsP   = classForEffective(effP, allEff);
-    const clsK   = classForEffective(effK, allEff);
-    const clsM   = classForEffective(effM, allEff);
-    const clsMash= classForEffective(effMash, allEff);
+    // Highlight scope: only consider Praktis + INCLUDED competitor columns
+    const compEff = compEntries.map(e => e.eff).filter(v => v !== null);
+    const allEff  = [effP, ...compEff];
+    const clsP    = compEff.length ? classForEffective(effP, allEff) : "";
 
     const asset = assetsBySku[p.code] || {};
     const praktisUrl = asset.product_url || null;
@@ -473,15 +699,18 @@ function renderAllPage(pivotPage, assetsBySku) {
     const cell = (promo, regular, url, cls, label=null) =>
       `<td class="${cls}">${priceCellHTML(promo, regular, url, label)}</td>`;
 
+    const compCells = compEntries.map(e => {
+      const cls = classForEffective(e.eff, allEff);
+      return cell(e.promo, e.reg, e.url, cls, e.label);
+    }).join("");
+
     return `
       <tr>
         <td>${escapeHtml(p.code)}</td>
         ${imgTd(praktisImg)}
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
-        ${cell(p.praktis_promo,      p.praktis_regular,      null,            clsP)}
-        ${cell(p.praktiker_promo,    p.praktiker_regular,    p.praktiker_url, clsK, p.praktiker_label || null)}
-        ${cell(p.mrbricolage_promo,  p.mrbricolage_regular,  p.mrbricolage_url, clsM, p.mrbricolage_label || null)}
-        ${cell(p.mashinibg_promo,    p.mashinibg_regular,    p.mashinibg_url, clsMash, p.mashinibg_label || null)}
+        ${cell(p.praktis_promo, p.praktis_regular, null, clsP)}
+        ${compCells}
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
@@ -642,7 +871,7 @@ async function init() {
     const brand = bs || bt;
 
     const price = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
-    const price_status = price === "better" ? "ours_lower" : price === "worse" ? "ours_higher" : "";
+    const price_status = price === "better" ? "ours_lower" : "ours_higher";
 
     const per_page = 50;
     const params = new URLSearchParams();
