@@ -654,17 +654,32 @@ function renderSingle(rows, site, assetsBySku) {
 }
 
 function renderAllPage(pivotPage, assetsBySku) {
-    const presenceMode = (document.getElementById("praktisPresence")?.value || "");
-    if (presenceMode) {
-      pivotPage = pivotPage.filter(p => {
-        const a = assetsBySku[p.code] || {};
-        const onSite = isOnPraktis(a.product_url || "");
-        return presenceMode === "present" ? onSite : !onSite;
-      });
-    }
+  const presenceMode = (document.getElementById("praktisPresence")?.value || "");
+  if (presenceMode) {
+    pivotPage = pivotPage.filter(p => {
+      const a = assetsBySku[p.code] || {};
+      const onSite = isOnPraktis(a.product_url || "");
+      return presenceMode === "present" ? onSite : !onSite;
+    });
+  }
 
   // ----- Dynamic headers (Praktis fixed + selected competitor columns in order)
   const activeCols = colOrder.slice(); // already filtered by selection
+
+  // NEW: Hide rows that don't exist in any of the selected competitor stores
+  if (activeCols.length > 0) {
+    pivotPage = pivotPage.filter(p => {
+      for (const key of activeCols) {
+        const meta = COL_META[key];
+        // Consider row present if either promo or regular has a numeric price
+        const hasPrice =
+          toNum(p[meta.promo]) !== null || toNum(p[meta.regular]) !== null;
+        if (hasPrice) return true;
+      }
+      return false;
+    });
+  }
+
   const headers = [
     "Praktis Code","Image","Praktis Name","Praktis Price",
     ...activeCols.map(k => `${COL_LABELS[k]} Price`)
