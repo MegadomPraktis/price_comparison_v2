@@ -91,14 +91,17 @@ if (!praktisPresence) {
 const groupFilter = document.getElementById("groupFilter");
 if (groupFilter && !groupFilter.options.length) await loadGroupsInto(groupFilter, true);
 let CURRENT_GROUP_ID = "";
+let CURRENT_GROUP_LABEL = "";
 groupFilter?.addEventListener("change", () => {
   CURRENT_GROUP_ID = groupFilter.value || "";
+  CURRENT_GROUP_LABEL = groupFilter.selectedOptions?.[0]?.textContent || "";
+  updateSelectedChip();
   page = 1; loadCore(true);
 });
 
 // Create trigger + panel with your exact class names
 let catsTriggerWrap = document.getElementById("catsTriggerWrap");
-let catsTrigger, catsMega, catsLeft, catsRight;
+let catsTrigger, catsMega, catsLeft, catsRight, catsChip;
 
 (function ensureCatsMenu() {
   if (!toolbar) return;
@@ -111,6 +114,8 @@ let catsTrigger, catsMega, catsLeft, catsRight;
       <button class="cats-trigger" id="catsTrigger" type="button">
         Categories ▾
       </button>
+      <span id="catsSelectedChip" class="group-selected" style="display:none"></span>
+      <button id="catsClearBtn" class="btn-clear" style="display:none" type="button">Clear</button>
       <div class="cats-mega" id="catsMega" aria-hidden="true">
         <div class="cats-left">
           <ul class="cats-left-list" id="catsLeft"></ul>
@@ -128,6 +133,13 @@ let catsTrigger, catsMega, catsLeft, catsRight;
   catsMega    = document.getElementById("catsMega");
   catsLeft    = document.getElementById("catsLeft");
   catsRight   = document.getElementById("catsRight");
+  catsChip    = document.getElementById("catsSelectedChip");
+
+  const clearBtn = document.getElementById("catsClearBtn");
+  clearBtn?.addEventListener("click", (e) => {
+    e.preventDefault();
+    applyGroupSelection("", "Всички");
+  });
 })();
 
 // Build tree exactly like Matching
@@ -282,9 +294,24 @@ function ensureSelectHasOption(selectEl, id, label) {
   selectEl.value = idStr;
 }
 
-function applyGroupSelection(id, _label) {
+function updateSelectedChip() {
+  if (!catsChip) return;
+  const clearBtn = document.getElementById("catsClearBtn");
+  if (CURRENT_GROUP_ID) {
+    catsChip.style.display = "";
+    catsChip.textContent = CURRENT_GROUP_LABEL || `ID ${CURRENT_GROUP_ID}`;
+    if (clearBtn) clearBtn.style.display = "";
+  } else {
+    catsChip.style.display = "none";
+    if (clearBtn) clearBtn.style.display = "none";
+  }
+}
+
+function applyGroupSelection(id, label) {
   CURRENT_GROUP_ID = String(id || "");
-  if (groupFilter) ensureSelectHasOption(groupFilter, id, _label);
+  CURRENT_GROUP_LABEL = label || "";
+  if (groupFilter) ensureSelectHasOption(groupFilter, id, label);
+  updateSelectedChip();
   page = 1; loadCore(true);
 }
 
@@ -759,17 +786,25 @@ function filterByGroup(rows, selectedGroupId, isPivot=false) {
     });
   }
 
-  // pivot objects don’t carry groups → best effort: keep only items that existed in the
-  // original lastRows with a matching SKU and a matching group.
+  // PIVOT: prefer the group_ids we attached in pivotAll()
+  const withInline = rows.filter(p => Array.isArray(p.group_ids) && p.group_ids.length > 0);
+  if (withInline.length > 0) {
+    return rows.filter(p => {
+      const ids = Array.isArray(p.group_ids) ? p.group_ids : [];
+      return ids.some(id => want.has(Number(id)));
+    });
+  }
+
+  // Fallback to old SKU mapping if pivot didn’t carry any groups at all
   const goodSkus = new Set(
     lastRows.filter(r => {
       const ids = extractRowGroupIds(r);
       return ids.length && ids.some(id => want.has(Number(id)));
     }).map(r => r.product_sku)
   );
+  if (goodSkus.size === 0) return rows; // nothing to go on → no-op
   return rows.filter(p => goodSkus.has(p.code));
 }
-
 
 // ---------------- Data fetch ----------------
 async function fetchBrands() {
@@ -796,8 +831,8 @@ async function fetchAssetsForSkus(skus) {
   return r.json();
 }
 
-// IMPORTANT: follow Matching’s query param names; now includes group_id
-async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null, brand=null, q=null, group_id=null }) {
+// IMPORTANT: now uses category_id (not group_id)
+async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null, brand=null, q=null, category_id=null }) {
   const params = new URLSearchParams();
   params.set("site_code", site_code);
   params.set("limit", String(limit));
@@ -805,7 +840,7 @@ async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null,
   if (tag_id && tag_id !== "all" && tag_id !== "") params.set("tag_id", tag_id);
   if (brand && brand.trim()) params.set("brand", brand);
   if (q && q.trim()) params.set("q", q.trim());
-  if (group_id && String(group_id).trim() !== "") params.set("group_id", String(group_id).trim());
+  if (category_id && String(category_id).trim() !== "") params.set("category_id", String(category_id).trim());
   const r = await fetch(`${API}/api/compare?${params.toString()}`);
   if (!r.ok) throw new Error(`compare HTTP ${r.status}`);
   return r.json();
@@ -817,6 +852,10 @@ function pivotAll(flatRows) {
   for (const r of flatRows) {
     const sku = r.product_sku ?? "";
     if (!sku) continue;
+
+    // pull group ids from the raw row once
+    const rowGroups = extractRowGroupIds(r);
+
     if (!map.has(sku)) {
       map.set(sku, {
         code: sku,
@@ -824,14 +863,26 @@ function pivotAll(flatRows) {
         brand: r.product_brand || r.brand || null,
         tags:  r.product_tags || r.tags || null,
 
+        // keep praktis prices
         praktis_regular: toNum(r.product_price_regular),
         praktis_promo:   toNum(r.product_price_promo),
 
+        // NEW: carry product group ids for client-side filtering
+        group_ids: rowGroups && rowGroups.length ? rowGroups.slice() : [],
+
+        // competitor slots
         praktiker_regular: null, praktiker_promo: null, praktiker_url: null, praktiker_label: null,
         mrbricolage_regular: null, mrbricolage_promo: null, mrbricolage_url: null, mrbricolage_label: null,
         mashinibg_regular: null, mashinibg_promo: null, mashinibg_url: null, mashinibg_label: null,
       });
+    } else {
+      // If we didn't have groups yet, try set them from a later row
+      const agg = map.get(sku);
+      if ((!agg.group_ids || agg.group_ids.length === 0) && rowGroups && rowGroups.length) {
+        agg.group_ids = rowGroups.slice();
+      }
     }
+
     const agg = map.get(sku);
     const site = (r.competitor_site || "").toLowerCase();
     const compReg = toNum(r.competitor_price_regular);
@@ -877,13 +928,13 @@ function statusAll(p) {
 
 function renderSingle(rows, site, assetsBySku) {
   const presenceMode = (document.getElementById("praktisPresence")?.value || "");
-    if (presenceMode) {
-      rows = rows.filter(r => {
-        const a = assetsBySku[r.product_sku] || {};
-        const onSite = isOnPraktis(a.product_url || "");
-        return presenceMode === "present" ? onSite : !onSite;
-      });
-    }
+  if (presenceMode) {
+    rows = rows.filter(r => {
+      const a = assetsBySku[r.product_sku] || {};
+      const onSite = isOnPraktis(a.product_url || "");
+      return presenceMode === "present" ? onSite : !onSite;
+    });
+  }
   const siteKey = (site || "").toLowerCase();
   const isPrak  = siteKey.includes("praktiker");
   const isMash  = siteKey.includes("mashin");
@@ -1024,7 +1075,7 @@ async function loadCore(refetch=true) {
     lastRows = await fetchCompare({
       site_code, limit, source: "snapshots",
       tag_id: tagVal, brand, q,
-      group_id: selectedGroupId || null
+      category_id: selectedGroupId || null    // ← send category_id to backend
     }) || [];
     lastSite = site_code; lastTag = tagVal; page = 1;
   }
@@ -1036,13 +1087,6 @@ async function loadCore(refetch=true) {
 
   if (site_code === "all") {
     let pivot = pivotAll(lastRows);
-
-      // Fallback category filter (works even if backend doesn’t filter)
-      const selGroup = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
-      if (selGroup) {
-        pivot = filterByGroup(pivot, selGroup, /* isPivot */ true);
-      }
-
 
     if (selectedTag) {
       pivot = pivot.filter(p => {
@@ -1074,12 +1118,6 @@ async function loadCore(refetch=true) {
     if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   } else {
     let rows = lastRows.slice();
-
-      // Fallback category filter for flat rows
-      const selGroup = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
-      if (selGroup) {
-        rows = filterByGroup(rows, selGroup, /* isPivot */ false);
-      }
 
     if (selectedTag) {
       rows = rows.filter(r => {
@@ -1173,118 +1211,100 @@ async function init() {
   prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); loadCore(false); });
   nextPageBtn?.addEventListener("click",   () => { page = page + 1; loadCore(false); });
 
-// ------- EXACT EXPORT OF CURRENT "ALL SITES" VIEW (filters + columns) -------
-function exportViaBackend() {
-  const site_code = siteSelect?.value || "all";
+  // ------- EXACT EXPORT OF CURRENT "ALL SITES" VIEW (filters + columns) -------
+  function exportViaBackend() {
+    const site_code = siteSelect?.value || "all";
 
-  // ---- collect active filters
-  const q = (document.getElementById("searchInput")?.value || "").trim();
-  const tag_id = (document.getElementById("tagFilter")?.value || "").trim();
+    // ---- collect active filters
+    const q = (document.getElementById("searchInput")?.value || "").trim();
+    const tag_id = (document.getElementById("tagFilter")?.value || "").trim();
 
-  const bt = (document.getElementById("brandInput")?.value || "").trim();
-  const bs = (document.getElementById("brandSelect")?.value || "").trim();
-  const brand = bs || bt;
+    const bt = (document.getElementById("brandInput")?.value || "").trim();
+    const bs = (document.getElementById("brandSelect")?.value || "").trim();
+    const brand = bs || bt;
 
-  const priceRaw = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
-  let price_status = "";
-  if (priceRaw === "better") price_status = "ours_lower";
-  else if (priceRaw === "worse") price_status = "ours_higher";
+    const priceRaw = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
+    let price_status = "";
+    if (priceRaw === "better") price_status = "ours_lower";
+    else if (priceRaw === "worse") price_status = "ours_higher";
 
-  const category_id =
-    (document.getElementById("categoryFilter")?.value ||
-     document.getElementById("categorySelect")?.value || "").trim();
+    const category_id =
+      (document.getElementById("categoryFilter")?.value ||
+       document.getElementById("categorySelect")?.value ||
+       groupFilter?.value || CURRENT_GROUP_ID || "").trim();
 
-  const praktis_presence = (document.getElementById("praktisPresence")?.value || "").trim(); // "" | present | missing
+    const praktis_presence = (document.getElementById("praktisPresence")?.value || "").trim(); // "" | present | missing
 
-  // ---- derive visible competitor columns
-  // Base praktis columns are always first
-  const baseCols = ["praktis_code", "image", "praktis_name", "praktis_price"];
-  let competitorTokens = [];
+    // ---- derive visible competitor columns
+    const baseCols = ["praktis_code", "image", "praktis_name", "praktis_price"];
+    let competitorTokens = [];
 
-  // 1) Preferred: read actual visible header cells
-  const table = document.getElementById("compareTable");
-  const thead = table?.querySelector("thead");
-  if (site_code === "all" && thead) {
-    const ths = thead.querySelectorAll("th");
-    ths.forEach(th => {
-      // visible?
-      const cs = window.getComputedStyle(th);
-      const visible = cs.display !== "none" && th.offsetWidth > 0 && th.offsetHeight > 0;
-      if (!visible) return;
+    const table = document.getElementById("compareTable");
+    const thead = table?.querySelector("thead");
+    if (site_code === "all" && thead) {
+      const ths = thead.querySelectorAll("th");
+      ths.forEach(th => {
+        const cs = window.getComputedStyle(th);
+        const visible = cs.display !== "none" && th.offsetWidth > 0 && th.offsetHeight > 0;
+        if (!visible) return;
 
-      // use data-site if present, else try mapping by header text
-      let key = (th.getAttribute("data-site") || "").trim().toLowerCase();
-      if (!key) {
-        const txt = (th.textContent || "").trim().toLowerCase();
-        if (txt.includes("praktiker")) key = "praktiker";
-        else if (txt.includes("bricol")) key = "mrbricolage";
-        else if (txt.includes("mashin")) key = "mashinibg";
-      }
-      if (key && (key === "praktiker" || key === "mrbricolage" || key === "mashinibg")) {
-        competitorTokens.push(`${key}_price`);
-      }
-    });
-  }
-
-  // 2) Fallback: read Columns popover checkboxes
-  if (site_code === "all" && competitorTokens.length === 0) {
-    const colMenu = document.getElementById("columnsMenu") || document.getElementById("columnsPopup");
-    if (colMenu) {
-      colMenu.querySelectorAll('input[type="checkbox"][data-col]').forEach(cb => {
-        if (cb.checked) {
-          const k = (cb.getAttribute("data-col") || "").trim().toLowerCase();
-          if (k) competitorTokens.push(`${k}_price`);
+        let key = (th.getAttribute("data-site") || "").trim().toLowerCase();
+        if (!key) {
+          const txt = (th.textContent || "").trim().toLowerCase();
+          if (txt.includes("praktiker")) key = "praktiker";
+          else if (txt.includes("bricol")) key = "mrbricolage";
+          else if (txt.includes("mashin")) key = "mashinibg";
+        }
+        if (key && (key === "praktiker" || key === "mrbricolage" || key === "mashinibg")) {
+          competitorTokens.push(`${key}_price`);
         }
       });
     }
+
+    if (site_code === "all" && competitorTokens.length === 0 && Array.isArray(window.colOrder)) {
+      competitorTokens = window.colOrder.map(k => `${String(k).toLowerCase()}_price`);
+    }
+
+    const columns = site_code === "all" ? baseCols.concat(competitorTokens) : null;
+
+    // ---- pagination (export exactly current page/size)
+    const per_page =
+      Number(document.getElementById("pageSize")?.value) ||
+      (typeof window.perPage !== "undefined" ? Number(window.perPage) : 50);
+    const currentPage = (typeof window.page !== "undefined") ? Number(window.page) : 1;
+
+    // ---- build params
+    const params = new URLSearchParams();
+    params.set("site_code", site_code);
+    params.set("limit", "2000");
+    params.set("source", "snapshots");
+
+    if (q)                 params.set("q", q);
+    if (tag_id)            params.set("tag_id", tag_id);
+    if (brand)             params.set("brand", brand);
+    if (price_status)      params.set("price_status", price_status);
+    if (category_id)       params.set("category_id", category_id);
+    if (praktis_presence)  params.set("praktis_presence", praktis_presence);
+
+    params.set("page", String(currentPage));
+    params.set("per_page", String(per_page));
+
+    if (columns && columns.length) {
+      params.set("columns", columns.join(","));
+    }
+
+    window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
   }
 
-  // 3) Last resort: window.colOrder
-  if (site_code === "all" && competitorTokens.length === 0 && Array.isArray(window.colOrder)) {
-    competitorTokens = window.colOrder.map(k => `${String(k).toLowerCase()}_price`);
+  // Clean re-bind
+  {
+    const btn = document.getElementById("exportExcel") || document.querySelector("[data-export], .export");
+    if (btn) {
+      const clone = btn.cloneNode(true);
+      btn.parentNode.replaceChild(clone, btn);
+      clone.addEventListener("click", exportViaBackend);
+    }
   }
-
-  const columns = site_code === "all" ? baseCols.concat(competitorTokens) : null;
-
-  // ---- pagination (export exactly current page/size)
-  const per_page =
-    Number(document.getElementById("pageSize")?.value) ||
-    (typeof window.perPage !== "undefined" ? Number(window.perPage) : 50);
-  // page should already exist in scope in your file; guard anyway:
-  const currentPage = (typeof window.page !== "undefined") ? Number(window.page) : 1;
-
-  // ---- build params
-  const params = new URLSearchParams();
-  params.set("site_code", site_code);
-  params.set("limit", "2000");
-  params.set("source", "snapshots");
-
-  if (q)                 params.set("q", q);
-  if (tag_id)            params.set("tag_id", tag_id);
-  if (brand)             params.set("brand", brand);
-  if (price_status)      params.set("price_status", price_status);
-  if (category_id)       params.set("category_id", category_id);
-  if (praktis_presence)  params.set("praktis_presence", praktis_presence);
-
-  params.set("page", String(currentPage));
-  params.set("per_page", String(per_page));
-
-  if (columns && columns.length) {
-    params.set("columns", columns.join(","));
-  }
-
-  window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
-}
-
-// Clean re-bind
-{
-  const btn = document.getElementById("exportExcel") || document.querySelector("[data-export], .export");
-  if (btn) {
-    const clone = btn.cloneNode(true);
-    btn.parentNode.replaceChild(clone, btn);
-    clone.addEventListener("click", exportViaBackend);
-  }
-}
 
   // First render
   await loadCore(true);

@@ -698,3 +698,54 @@ section thead th {
 .cats-mega .l2-item.open  > .l3-fly{
   display: block;
 }
+/* Equal spacing around pagination and consistent layout */
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;             /* ensures table → pager gap is equal everywhere */
+  padding-bottom: 18px;  /* adds same bottom space as top */
+}
+
+/* --- Pagination --- */
+.pager {
+  margin: 0 auto;
+  padding: 18px 0;
+  gap: 12px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Neutral button style */
+.pager button {
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;     /* soft neutral border */
+  background: #fff;               /* white background for clarity */
+  color: #374151;                 /* dark text */
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+/* Hover state */
+.pager button:hover:not(:disabled) {
+  background: #f3f4f6;            /* light gray hover */
+}
+
+/* Active (current page) button */
+.pager button:disabled {
+  background: #f59e0b;            /* orange highlight for current page */
+  color: #fff;
+  border-color: #f59e0b;
+  font-weight: 600;
+  opacity: 1;                     /* make sure it’s not dimmed */
+}
+
+/* Disabled Prev/Next buttons */
+.pager button[disabled]:not(:only-child):not(:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+

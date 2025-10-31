@@ -19,7 +19,7 @@ class ScrapeResult(BaseModel):
     written: int
 
 
-@router.get("/compare")  # keep open dicts so extra fields (brand/tags) survive
+@router.get("/compare")  # keep open dicts so extra fields (brand/tags/groups) survive
 async def api_compare(
     site_code: str = Query("all", description="competitor code or 'all'"),
     limit: int = Query(200, ge=1, le=2000),
@@ -31,13 +31,20 @@ async def api_compare(
         None,
         description="Server-side price filter; ignores N/A competitor prices.",
     ),
+    # NEW: category/group filter (supports both names like Matching)
+    group_id: Optional[str] = Query(
+        None, description="Group/category id (descendants included)"
+    ),
+    category_id: Optional[str] = Query(
+        None, description="Alias of group_id for compatibility"
+    ),
 ):
     """
     Comparison rows:
       - 'snapshots' (default): read from DB
       - 'live'     : scrape then read from DB
-      - 'all' site: union across all competitor sites
-      - Filters: q, tag_id, brand (brand normalize like Matching)
+      - 'all' site : union across all competitor sites
+      - Filters    : q, tag_id, brand, group_id (descendants included)
       - Optional price_filter: ours_lower / ours_higher (N/A ignored)
     """
     # Normalize tag_id to int if provided
@@ -47,6 +54,15 @@ async def api_compare(
             tag_id_int = int(tag_id)
         except ValueError:
             tag_id_int = None  # ignore bad value
+
+    # Normalize group/category to int if provided (category_id wins if set)
+    raw_group = category_id if (category_id not in (None, "", "all")) else group_id
+    group_id_int: Optional[int] = None
+    if raw_group not in (None, "", "all"):
+        try:
+            group_id_int = int(raw_group)
+        except ValueError:
+            group_id_int = None
 
     # Scrape first if requested
     if source == "live":
@@ -65,7 +81,7 @@ async def api_compare(
             with get_session() as session:
                 await scrape_and_snapshot(session, scraper, limit=limit)
 
-    # Build rows (pre-filtered by q/tag/brand). Only matched items are returned.
+    # Build rows (pre-filtered by q/tag/brand/group). Only matched items are returned.
     rows: List[dict] = []
     if site_code == "all":
         with get_session() as session:
@@ -80,6 +96,7 @@ async def api_compare(
                         q=q,
                         tag_id=tag_id_int,
                         brand=brand,
+                        group_id=group_id_int,   # ← pass through
                     )
                 )
         if price_filter:
@@ -93,6 +110,7 @@ async def api_compare(
                 q=q,
                 tag_id=tag_id_int,
                 brand=brand,
+                group_id=group_id_int,       # ← pass through
             )
         if price_filter:
             rows = _apply_price_filter(rows, mode=price_filter, all_sites=False)
@@ -102,7 +120,7 @@ async def api_compare(
 
 def _apply_price_filter(rows: List[dict], mode: Literal["ours_lower", "ours_higher"], all_sites: bool) -> List[dict]:
     """
-    - all_sites=True: group by product_sku; compare ours to MIN competitor price across sites
+    - all_sites=True : group by product_sku; compare ours to MIN competitor price across sites
     - all_sites=False: compare ours to that site's competitor price
     Ignore rows where a comparable price is missing (N/A).
     """

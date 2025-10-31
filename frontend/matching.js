@@ -1,10 +1,11 @@
 // matching.js — Matching tab with brand & tag filters + MEGA MENU category picker (hover/click)
-// Keeps all existing behavior; adds: (a) L2→L3 hover flyout, (b) close-delay so menu doesn't close too fast.
+// Restores visible filters for (1) matched/unmatched and (2) Praktis presence,
+// keeps accurate DB count + centered pager with numeric buttons.
 
 import { API, loadSitesInto, loadTagsInto, loadGroupsInto, escapeHtml, makeTagBadge } from "./shared.js";
 
 /* ────────────────────────────────────────────────────────────────────────────
-   TAG CACHE (5-min TTL) — avoids per-row GET /api/tags
+   TAG CACHE (5-min TTL)
    ──────────────────────────────────────────────────────────────────────────── */
 const TAG_CACHE_KEY = "ALL_TAGS_CACHE_V1";
 const TAG_TTL_MS = 5 * 60 * 1000;
@@ -61,19 +62,52 @@ const groupClearBtn = document.getElementById("groupClear");
 
 // Paging + search
 let page = 1;
-const pageInfo = document.getElementById("pageInfo");
-const tbodyMatch = document.querySelector("#matchTable tbody");
-const loadProductsBtn = document.getElementById("loadProducts");
-const searchInput = document.getElementById("searchInput");
-const prevPageBtn = document.getElementById("prevPage");
-const nextPageBtn = document.getElementById("nextPage");
-const autoMatchBtn = document.getElementById("autoMatch");
-const refreshAssetsBtn = document.getElementById("refreshPraktisAssets");
+const PAGE_SIZE = 50;
 
-// Toolbar-created controls (if missing in HTML)
+const pageInfo       = document.getElementById("pageInfo"); // numeric buttons container
+const prevPageBtn    = document.getElementById("prevPage");
+const nextPageBtn    = document.getElementById("nextPage");
+const pagerContainer = document.querySelector(".pager");
+
+const tbodyMatch     = document.querySelector("#matchTable tbody");
+const loadProductsBtn= document.getElementById("loadProducts");
+const searchInput    = document.getElementById("searchInput");
+
+const autoMatchBtn       = document.getElementById("autoMatch");
+const refreshAssetsBtn   = document.getElementById("refreshPraktisAssets");
+
+// Toolbar & right-top counter
 const toolbar = document.querySelector(".toolbar");
+let recordCount = document.getElementById("recordCount");
+if (!recordCount && toolbar) {
+  recordCount = document.createElement("div");
+  recordCount.id = "recordCount";
+  recordCount.style.marginLeft = "auto";
+  recordCount.style.fontWeight = "600";
+  recordCount.style.opacity = ".9";
+  toolbar.appendChild(recordCount);
+}
 
-// Remove legacy 3 buttons if present
+// Center pager nicely
+if (pagerContainer) {
+  pagerContainer.style.display = "flex";
+  pagerContainer.style.alignItems = "center";
+  pagerContainer.style.justifyContent = "center";
+  pagerContainer.style.gap = "10px";
+}
+if (pageInfo) {
+  pageInfo.style.minWidth = "220px";
+  pageInfo.style.display = "flex";
+  pageInfo.style.alignItems = "center";
+  pageInfo.style.justifyContent = "center";
+  pageInfo.style.gap = "8px";
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Restore filters (Matched/Unmatched + Praktis Presence)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+// Remove legacy buttons if present to avoid duplicates
 ["showMatched","showUnmatched","showAll"].forEach(id=>{
   const el = document.getElementById(id);
   if (el?.parentNode) el.parentNode.removeChild(el);
@@ -103,12 +137,25 @@ function ensureBrandPlaceholder() {
   }
 }
 
-// Match status dropdown
+// Match status dropdown (VISIBLE)
 let matchSelect = document.getElementById("matchSelect");
 if (!matchSelect) {
+  // create labeled group
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.gap = "6px";
+
+  const lbl = document.createElement("span");
+  lbl.textContent = "Match:";
+  lbl.style.opacity = ".8";
+
   matchSelect = document.createElement("select");
   matchSelect.id = "matchSelect";
-  toolbar?.appendChild(matchSelect);
+
+  wrap.appendChild(lbl);
+  wrap.appendChild(matchSelect);
+  toolbar?.appendChild(wrap);
 }
 function initMatchSelect() {
   matchSelect.innerHTML = "";
@@ -118,18 +165,29 @@ function initMatchSelect() {
 }
 initMatchSelect();
 
-// --- Praktis presence dropdown
+// Praktis presence dropdown (VISIBLE)
 let praktisPresence = document.getElementById("praktisPresence");
 if (!praktisPresence) {
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.gap = "6px";
+
+  const lbl = document.createElement("span");
+  lbl.textContent = "Praktis:";
+  lbl.style.opacity = ".8";
+
   praktisPresence = document.createElement("select");
   praktisPresence.id = "praktisPresence";
   praktisPresence.innerHTML = `
     <option value="">All products</option>
     <option value="present">Products on Praktis website</option>
     <option value="missing">Products NOT on Praktis website</option>`;
-  toolbar?.appendChild(praktisPresence);
+
+  wrap.appendChild(lbl);
+  wrap.appendChild(praktisPresence);
+  toolbar?.appendChild(wrap);
 }
-praktisPresence.addEventListener("change", () => { page = 1; loadProducts(); });
 
 // State
 let matchState = ""; // "", "matched", "unmatched"
@@ -153,10 +211,10 @@ async function loadBrands() {
 }
 await loadBrands();
 
+// Brand events
 function currentBrandFilter() {
   return (brandSelect.value || brandInput.value || "").trim();
 }
-
 brandInput.addEventListener("input", () => {
   if (brandInput.value) brandSelect.value = "";
   page = 1; loadProducts();
@@ -165,11 +223,15 @@ brandSelect.addEventListener("change", () => {
   if (brandSelect.value) brandInput.value = "";
   page = 1; loadProducts();
 });
+
+// Match/Presence events
 matchSelect.addEventListener("change", () => {
   matchState = matchSelect.value || "";
   page = 1; loadProducts();
 });
+praktisPresence.addEventListener("change", () => { page = 1; loadProducts(); });
 
+// Helper
 function isOnPraktis(url) {
   if (!url) return false;
   const u = String(url).trim();
@@ -177,7 +239,7 @@ function isOnPraktis(url) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Category MEGA MENU
+   Category MEGA MENU (unchanged logic)
    ──────────────────────────────────────────────────────────────────────────── */
 function buildGroupTree(list) {
   const byId = new Map();
@@ -283,7 +345,7 @@ function renderRightColumns(rootId) {
   }
 
   catsRight.appendChild(ul);
-  attachL2HoverHandlers(ul);   // keep L3 open briefly when moving mouse
+  attachL2HoverHandlers(ul);
 }
 
 function attachL2HoverHandlers(rootEl) {
@@ -322,10 +384,9 @@ function setActiveRoot(id) {
   }
 }
 
-// --- ensure the hidden <select> reflects the clicked id, and keep a JS fallback
 function ensureSelectHasOption(selectEl, id, label) {
   const idStr = String(id || "");
-  if (!selectEl) return; // handled by CURRENT_GROUP_ID fallback
+  if (!selectEl) return;
   let found = false;
   for (const opt of selectEl.options) {
     if (String(opt.value) === idStr) { found = true; break; }
@@ -336,21 +397,20 @@ function ensureSelectHasOption(selectEl, id, label) {
     o.textContent = label || idStr;
     selectEl.appendChild(o);
   }
-  selectEl.value = idStr; // selects it (or clears if idStr === "")
+  selectEl.value = idStr;
 }
 
 function applyGroupSelection(id, label) {
-  CURRENT_GROUP_ID = String(id || "");                    // ← always set fallback
-  if (groupFilter) ensureSelectHasOption(groupFilter, id, label); // keep select in sync when present
+  CURRENT_GROUP_ID = String(id || "");
+  if (groupFilter) ensureSelectHasOption(groupFilter, id, label);
   if (groupSelectedLabel) groupSelectedLabel.textContent = id ? label : "Всички";
   page = 1;
   loadProducts();
 }
 
-// Open/close with delay so it doesn't collapse too fast
-const CLOSE_DELAY = 350; // ms
+// Open/close with delay
+const CLOSE_DELAY = 350;
 let closeTimer = null;
-
 function openCatsPanel() {
   if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
   catsWrap?.classList.add("open");
@@ -365,23 +425,18 @@ function scheduleClose() {
   if (closeTimer) clearTimeout(closeTimer);
   closeTimer = setTimeout(() => closeCatsPanel(), CLOSE_DELAY);
 }
-
-// Init menu
 (async function initMegaMenu() {
-  if (!catsPanel) return; // if HTML not present, silently skip
+  if (!catsPanel) return;
   try {
     const r = await fetch(`${API}/api/groups`);
     const groups = r.ok ? await r.json() : [];
     GROUP_TREE = buildGroupTree(groups);
     renderLeftRoots();
-    // default active = first root
     const firstRoot = GROUP_TREE.roots[0]?.id;
     setActiveRoot(firstRoot ? String(firstRoot) : "");
   } catch (e) {
     console.warn("Groups load failed", e);
   }
-
-  // open on hover & click; close on delayed mouseleave and outside click
   if (catsWrap && catsPanel) {
     catsWrap.addEventListener("mouseenter", openCatsPanel);
     catsWrap.addEventListener("mouseleave", scheduleClose);
@@ -389,14 +444,11 @@ function scheduleClose() {
       e.preventDefault();
       if (catsWrap.classList.contains("open")) scheduleClose(); else openCatsPanel();
     });
-    // keep open while moving between children
     catsPanel.addEventListener("mouseenter", () => { if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }});
     document.addEventListener("click", (e)=>{
       if (!catsWrap.contains(e.target)) closeCatsPanel();
     });
   }
-
-  // clear btn
   groupClearBtn?.addEventListener("click", (e)=>{
     e.preventDefault();
     applyGroupSelection("", "Всички");
@@ -437,13 +489,101 @@ if (searchInput) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
+   Helpers: build filters, count, and pager UI
+   ──────────────────────────────────────────────────────────────────────────── */
+function currentFilters() {
+  const q = (searchInput?.value || "").trim();
+  const tagId = (tagFilter?.value || "").trim();
+  const brand = currentBrandFilter();
+  const site = siteSelect?.value || "";
+  const matched = matchState || "";
+  const groupId = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
+  const presence = (praktisPresence?.value || "");
+  return { q, tagId, brand, site, matched, groupId, presence };
+}
+
+async function fetchTotalCount() {
+  const f = currentFilters();
+  const url = new URL(`${API}/api/products/count`);
+  if (f.q)       url.searchParams.set("q", f.q);
+  if (f.tagId)   url.searchParams.set("tag_id", f.tagId);
+  if (f.brand)   url.searchParams.set("brand", f.brand);
+  if (f.site)    url.searchParams.set("site_code", f.site);
+  if (f.matched) url.searchParams.set("matched", f.matched);
+  if (f.groupId) url.searchParams.set("group_id", f.groupId);
+  if (f.presence) url.searchParams.set("presence", f.presence);
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return 0;
+    const js = await r.json();
+    return Number(js?.count || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function clearNode(n){ if(!n) return; while(n.firstChild) n.removeChild(n.firstChild); }
+
+function makePageBtn(n, active=false) {
+  const b = document.createElement("button");
+  b.textContent = String(n);
+  b.disabled = active;
+  b.style.minWidth = "34px";
+  b.style.height   = "34px";
+  b.style.borderRadius = "10px";
+  b.style.border = "1px solid var(--border, #26324c)";
+  b.style.background = active ? "var(--accent, #3b82f6)" : "rgba(255,255,255,0.04)";
+  b.style.color = active ? "#fff" : "inherit";
+  b.style.fontWeight = active ? "700" : "500";
+  if (!active) b.onclick = () => { page = n; window.scrollTo({top:0, behavior:"smooth"}); loadProducts(); };
+  return b;
+}
+function makeDots(){
+  const s = document.createElement("span");
+  s.textContent = "…";
+  s.style.opacity = ".7";
+  return s;
+}
+
+function renderNumbers(totalPages){
+  if (!pageInfo) return;
+  clearNode(pageInfo);
+  let start = Math.max(1, page - 2);
+  let end   = Math.min(totalPages, page + 2);
+  if (end - start < 4) {
+    start = Math.max(1, Math.min(start, totalPages - 4));
+    end   = Math.min(totalPages, Math.max(end, 5));
+  }
+  if (start > 1) {
+    pageInfo.appendChild(makePageBtn(1, page===1));
+    if (start > 2) pageInfo.appendChild(makeDots());
+  }
+  for (let i=start;i<=end;i++) pageInfo.appendChild(makePageBtn(i, i===page));
+  if (end < totalPages) {
+    if (end < totalPages-1) pageInfo.appendChild(makeDots());
+    pageInfo.appendChild(makePageBtn(totalPages, page===totalPages));
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
    Data load & render
    ──────────────────────────────────────────────────────────────────────────── */
 async function loadProducts() {
+  // 1) Accurate total to clamp pages
+  const total = await fetchTotalCount();
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (page > totalPages) page = totalPages;
+
+  // update top-right counter
+  if (recordCount) {
+    recordCount.textContent = `${total} records`;
+  }
+
+  // 2) Load current page data
   const q = searchInput?.value.trim();
   const url = new URL(`${API}/api/products`);
   url.searchParams.set("page", String(page));
-  url.searchParams.set("page_size", "50");
+  url.searchParams.set("page_size", String(PAGE_SIZE));
   if (q) url.searchParams.set("q", q);
 
   const tagId = tagFilter?.value?.trim?.() || "";
@@ -455,17 +595,18 @@ async function loadProducts() {
   if (siteSelect?.value) url.searchParams.set("site_code", siteSelect.value);
   if (matchState) url.searchParams.set("matched", matchState);
 
-  // read from <select> when it exists; otherwise from JS fallback
   const selectedGroupId = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
   if (selectedGroupId) url.searchParams.set("group_id", selectedGroupId);
 
+  // presence filter is client-side (assets-derived), but we still pass it in case backend supports it
+  const presenceVal = (praktisPresence?.value || "");
+  if (presenceVal) url.searchParams.set("presence", presenceVal);
+
   const r = await fetch(url);
-  if (!r.ok) {
-    alert("Failed to load products");
-    return;
-  }
+  if (!r.ok) { alert("Failed to load products"); return; }
   const products = await r.json();
 
+  // 3) Enrich and render rows
   const productIds = products.map(p => p.id);
   let matchesByProductId = {};
   if (productIds.length) {
@@ -477,8 +618,6 @@ async function loadProducts() {
     if (r2.ok) {
       const matches = await r2.json();
       for (const m of matches) matchesByProductId[m.product_id] = m;
-    } else {
-      console.warn("Lookup matches failed", await r2.text());
     }
   }
 
@@ -496,12 +635,16 @@ async function loadProducts() {
   const assetsBySku = await fetchAssetsForSkus(skus);
 
   await renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku);
-  if (pageInfo) pageInfo.textContent = `Page ${page} (rows: ${products.length})`;
+
+  // 4) Pager UI
+  renderNumbers(totalPages);
+  prevPageBtn.disabled = (page <= 1);
+  nextPageBtn.disabled = (page >= totalPages);
 }
 
 async function renderMatchRows(products, matchesByProductId, tagsByProductId, assetsBySku = {}) {
   const ALL_TAGS = await getAllTagsCached();
-  const presenceMode = (document.getElementById("praktisPresence")?.value || "");
+  const presenceMode = (praktisPresence?.value || "");
   tbodyMatch.innerHTML = "";
   for (const p of products) {
     if (presenceMode) {
@@ -649,12 +792,12 @@ async function reloadOneRowLink(productId, tr) {
 
 // Buttons & paging
 loadProductsBtn && (loadProductsBtn.onclick = () => { page = 1; loadProducts(); });
-prevPageBtn && (prevPageBtn.onclick = () => { page = Math.max(1, page - 1); loadProducts(); });
-nextPageBtn && (nextPageBtn.onclick = () => { page = page + 1; loadProducts(); });
+prevPageBtn && (prevPageBtn.onclick = () => { page = Math.max(1, page - 1); window.scrollTo({top:0,behavior:"smooth"}); loadProducts(); });
+nextPageBtn && (nextPageBtn.onclick = () => { page = page + 1; window.scrollTo({top:0,behavior:"smooth"}); loadProducts(); });
 tagFilter && (tagFilter.onchange = () => { page = 1; loadProducts(); });
 autoMatchBtn && (autoMatchBtn.onclick = async () => {
   const code = siteSelect?.value || "";
-  const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}&limit=100`, { method: "POST" });
+  const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}&limit=100}`, { method: "POST" });
   if (!r.ok) {
     const err = await r.text();
     alert("Auto-match failed:\n" + err);

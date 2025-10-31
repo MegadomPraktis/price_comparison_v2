@@ -18,7 +18,7 @@ DB:
 
 - TO DO://
 - Adding margin to analytics
-- fixing scrape and refresh buttons to be only on showed items and doing all records if endpoind is called
+- fixing scrape and refresh buttons to be only on showed items and doing all records if endpoint is called
 - fixing what is shown on the page with how many pages and records visualization
 - email functionality rework
 - fix the category filter not filtering 

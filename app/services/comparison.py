@@ -13,6 +13,7 @@ from app.models import (
     CompetitorSite,
     ProductTag,
     Tag,
+    Group,  # ← has id, parent_id, name
 )
 from app.scrapers.base import BaseScraper, CompetitorDetail
 
@@ -51,14 +52,44 @@ def _latest_snapshot_stmt(site_id: int, comp_sku: Optional[str], comp_barcode: O
     return select(PriceSnapshot).where(PriceSnapshot.id == -1).limit(1)
 
 
+# ---------- NEW: group helpers (for Product.groupid) ----------
+def _get_descendant_group_ids(session: Session, root_id: int) -> List[int]:
+    """
+    Returns [root_id + all its descendants] by walking Group.parent_id.
+    """
+    if not root_id:
+        return []
+    rows = session.execute(select(Group.id, Group.parent_id)).all()
+    if not rows:
+        return [root_id]
+
+    children: Dict[Optional[int], List[int]] = {}
+    for gid, pid in rows:
+        children.setdefault(pid, []).append(gid)
+
+    out: List[int] = []
+    stack = [root_id]
+    seen = set()
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        out.append(cur)
+        for ch in children.get(cur, []):
+            stack.append(ch)
+    return out
+
+
 def _product_base_query(
     q: Optional[str],
     tag_id: Optional[int],
     brand: Optional[str],
+    group_ids: Optional[List[int]] = None,  # NEW: list of group ids incl. descendants
 ):
     """
-    Build a selectable for products with optional q / tag / brand filters.
-    NOTE: expects Product.brand to exist.
+    Build a selectable for products with optional q / tag / brand / group filters.
+    Uses Product.groupid (FK to groups).
     """
     stmt = select(Product)
 
@@ -85,6 +116,10 @@ def _product_base_query(
         norm = brand.strip().lower().replace(".", "").replace(" ", "")
         stmt = stmt.where(_norm_brand_sql(Product.brand) == norm)
 
+    # Group/category filter (descendants included) — Product.groupid ∈ group_ids
+    if group_ids:
+        stmt = stmt.where(Product.groupid.in_(group_ids))
+
     # Newest first (makes "limit" behave nicely)
     stmt = stmt.order_by(desc(Product.id))
     return stmt
@@ -97,11 +132,17 @@ def build_rows_from_snapshots(
     q: Optional[str] = None,
     tag_id: Optional[int] = None,
     brand: Optional[str] = None,
+    group_id: Optional[int] = None,   # NEW
 ) -> List[Dict]:
     """
-    Rows for a single competitor site, already filtered by q / tag_id / brand.
+    Rows for a single competitor site, already filtered by q / tag / brand / group.
     Only returns rows for products that are **matched** to this site.
-    Includes product_brand and product_tags (as [{id,name}, …]) for frontend filters.
+    Includes:
+      - product_brand
+      - product_tags: [{id,name}, …]
+      - product_group_id: int | None         (NEW)
+      - product_group: {id,name} | None      (NEW)
+      - group_ids: [int] (lightweight mirror) (NEW; always 0 or 1 element here)
     """
     site = session.execute(
         select(CompetitorSite).where(CompetitorSite.code == site_code)
@@ -109,14 +150,24 @@ def build_rows_from_snapshots(
     if not site:
         return []
 
-    # 1) Filter products (q, tag, brand) then LIMIT
-    prod_stmt = _product_base_query(q=q, tag_id=tag_id, brand=brand).limit(limit)
+    # Compute descendant set once if requested
+    descendant_ids: Optional[List[int]] = None
+    if group_id:
+        descendant_ids = _get_descendant_group_ids(session, group_id)
+        if not descendant_ids:
+            return []  # nothing under that subtree
+
+    # 1) Filter products (q, tag, brand, group) then LIMIT
+    prod_stmt = _product_base_query(
+        q=q, tag_id=tag_id, brand=brand, group_ids=descendant_ids
+    ).limit(limit)
     products = session.execute(prod_stmt).scalars().all()
     if not products:
         return []
 
-    # 2) Gather product tags (id + name) for client fallback
     prod_ids = [p.id for p in products]
+
+    # 2) Gather product tags (id + name) for client fallback
     tags_by_product: Dict[int, List[Dict[str, object]]] = {}
     if prod_ids:
         qtags = (
@@ -154,7 +205,12 @@ def build_rows_from_snapshots(
         comp_reg = snap.regular_price if snap else None
         comp_prm = snap.promo_price if snap else None
         comp_url = snap.url if snap else None
-        comp_label = snap.competitor_label if snap else None  # <<< ADDED
+        comp_label = snap.competitor_label if snap else None
+
+        # group payloads (thanks to Product.group relationship, lazy='joined')
+        gid = getattr(p, "groupid", None)
+        gobj = getattr(p, "group", None)
+        gname = getattr(gobj, "name", None) if gobj else None
 
         rows.append({
             # ours
@@ -164,7 +220,12 @@ def build_rows_from_snapshots(
             "product_price_regular": p.price_regular,
             "product_price_promo": p.price_promo,
             "product_brand": getattr(p, "brand", None),
-            "product_tags": tags_by_product.get(p.id, []),  # [{id,name}, …]
+
+            # filters/fallbacks
+            "product_tags": tags_by_product.get(p.id, []),        # [{id,name}, …]
+            "product_group_id": gid,                               # NEW
+            "product_group": {"id": gid, "name": gname} if gid else None,  # NEW
+            "group_ids": [gid] if gid is not None else [],         # NEW — for client fallback
 
             # competitor
             "competitor_site": site.code,
@@ -174,7 +235,7 @@ def build_rows_from_snapshots(
             "competitor_price_regular": comp_reg,
             "competitor_price_promo": comp_prm,
             "competitor_url": comp_url,
-            "competitor_label": comp_label,  # <<< ADDED
+            "competitor_label": comp_label,
         })
 
     return rows
@@ -344,12 +405,10 @@ async def scrape_and_snapshot(session, scraper, limit: int = 200) -> int:
     return written
 
 
-# ---------------- NEW: analytics history helper ----------------
+# ---------------- analytics history helper (unchanged) ----------------
 def get_history_for_product(session: Session, product_sku: str) -> Tuple[Optional[Product], Dict[str, List[PriceSnapshot]]]:
     """
-    Returns product + dict(site_code -> snapshots within last 6 months) for:
-    - praktis (our own)
-    - matched competitor sites for this product
+    Returns product + dict(site_code -> snapshots within last 6 months) for praktis + matched competitors.
     """
     prod = session.execute(select(Product).where(Product.sku == product_sku)).scalars().first()
     if not prod:
