@@ -1,12 +1,13 @@
-// comparison.js — stacked price with consistent alignment; Praktiker label inline
+// comparison.js — pager like Matching + accurate record counter (active columns + Praktis presence)
 import { API, loadSitesInto, loadTagsInto, loadGroupsInto, escapeHtml, fmtPrice } from "./shared.js";
 
-// ---------------- DOM ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   DOM
+   ──────────────────────────────────────────────────────────────────────────── */
 const siteSelect      = document.getElementById("siteSelect");
 const refreshSitesBtn = document.getElementById("refreshSites");
 const loadLatestBtn   = document.getElementById("loadLatest");
 const scrapeNowBtn    = document.getElementById("scrapeNow");
-const compareLimit    = document.getElementById("compareLimit");
 
 // IMPORTANT: same id as in matching.html
 const tagFilter       = document.getElementById("tagFilter");
@@ -15,14 +16,67 @@ const table  = document.getElementById("compareTable");
 const thead  = table.querySelector("thead") || table.createTHead();
 const tbody  = table.querySelector("tbody") || table.appendChild(document.createElement("tbody"));
 
-const pageInfo   = document.getElementById("pageInfo");
-const prevPageBtn= document.getElementById("prevPage");
-const nextPageBtn= document.getElementById("nextPage");
+// Ensure a pager exists (replicate Matching layout)
+let pagerContainer = document.querySelector(".pager");
+let prevPageBtn    = document.getElementById("prevPage");
+let pageInfo       = document.getElementById("pageInfo");
+let nextPageBtn    = document.getElementById("nextPage");
+
+(function ensurePager(){
+  if (!pagerContainer) {
+    pagerContainer = document.createElement("div");
+    pagerContainer.className = "pager";
+    table.after(pagerContainer);
+  }
+  // center like Matching
+  pagerContainer.style.display = "flex";
+  pagerContainer.style.alignItems = "center";
+  pagerContainer.style.justifyContent = "center";
+  pagerContainer.style.gap = "10px";
+  // ensure prev
+  if (!prevPageBtn) {
+    prevPageBtn = document.createElement("button");
+    prevPageBtn.id = "prevPage";
+    prevPageBtn.textContent = "Prev";
+    pagerContainer.appendChild(prevPageBtn);
+  }
+  // ensure numbers
+  if (!pageInfo) {
+    pageInfo = document.createElement("div");
+    pageInfo.id = "pageInfo";
+    pagerContainer.appendChild(pageInfo);
+  }
+  pageInfo.style.minWidth = "220px";
+  pageInfo.style.display = "flex";
+  pageInfo.style.alignItems = "center";
+  pageInfo.style.justifyContent = "center";
+  pageInfo.style.gap = "8px";
+  // ensure next
+  if (!nextPageBtn) {
+    nextPageBtn = document.createElement("button");
+    nextPageBtn.id = "nextPage";
+    nextPageBtn.textContent = "Next";
+    pagerContainer.appendChild(nextPageBtn);
+  }
+})();
 
 // ---------------- Toolbar (inject if missing) ----------------
 const toolbar = document.querySelector(".toolbar");
 
-// Search input (SKU/Name/Barcode)
+// Record counter (right side) — same approach as Matching
+let recordCount = document.getElementById("recordCount");
+if (!recordCount && toolbar) {
+  recordCount = document.createElement("div");
+  recordCount.id = "recordCount";
+  recordCount.style.marginLeft = "auto";
+  recordCount.style.fontWeight = "600";
+  recordCount.style.opacity = ".9";
+  toolbar.appendChild(recordCount);
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Search / Brand / Price / Presence (mirrors Matching)
+   ──────────────────────────────────────────────────────────────────────────── */
 let searchInput = document.getElementById("searchInput");
 if (!searchInput) {
   searchInput = document.createElement("input");
@@ -31,7 +85,6 @@ if (!searchInput) {
   toolbar?.appendChild(searchInput);
 }
 
-// Brand free text — same id as Matching
 let brandInput = document.getElementById("brandInput");
 if (!brandInput) {
   brandInput = document.createElement("input");
@@ -40,7 +93,6 @@ if (!brandInput) {
   toolbar?.appendChild(brandInput);
 }
 
-// Brand dropdown — same id as Matching
 let brandSelect = document.getElementById("brandSelect");
 if (!brandSelect) {
   brandSelect = document.createElement("select");
@@ -70,7 +122,7 @@ if (!priceSelect) {
   toolbar?.appendChild(priceSelect);
 }
 
-// --- Praktis presence dropdown (All / On site / Not on site)
+// Praktis presence dropdown (All / On site / Not on site)
 let praktisPresence = document.getElementById("praktisPresence");
 if (!praktisPresence) {
   praktisPresence = document.createElement("select");
@@ -84,10 +136,8 @@ if (!praktisPresence) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   CATEGORIES MEGA MENU — uses your style.css classes (same as Matching)
+   CATEGORIES MEGA MENU — same behavior as Matching
    ──────────────────────────────────────────────────────────────────────────── */
-
-// Hidden <select> (if present in HTML) kept in sync; JS fallback otherwise
 const groupFilter = document.getElementById("groupFilter");
 if (groupFilter && !groupFilter.options.length) await loadGroupsInto(groupFilter, true);
 let CURRENT_GROUP_ID = "";
@@ -99,7 +149,6 @@ groupFilter?.addEventListener("change", () => {
   page = 1; loadCore(true);
 });
 
-// Create trigger + panel with your exact class names
 let catsTriggerWrap = document.getElementById("catsTriggerWrap");
 let catsTrigger, catsMega, catsLeft, catsRight, catsChip;
 
@@ -125,7 +174,6 @@ let catsTrigger, catsMega, catsLeft, catsRight, catsChip;
         </div>
       </div>
     `;
-    // put it at the very start of the toolbar (like Matching)
     toolbar.insertBefore(catsTriggerWrap, toolbar.firstChild);
   }
 
@@ -142,7 +190,6 @@ let catsTrigger, catsMega, catsLeft, catsRight, catsChip;
   });
 })();
 
-// Build tree exactly like Matching
 function buildGroupTree(list) {
   const byId = new Map();
   list.forEach(g => byId.set(g.id, { ...g, children: [] }));
@@ -166,12 +213,10 @@ function buildGroupTree(list) {
 let GROUP_TREE = null;
 let ACTIVE_ROOT_ID = null;
 
-// Render L1 in .cats-left
 function renderLeftRoots() {
   if (!catsLeft || !GROUP_TREE) return;
   catsLeft.innerHTML = "";
 
-  // "Всички"
   const liAll = document.createElement("li");
   liAll.className = "root-item all";
   liAll.innerHTML = `<span class="ico">📂</span><span class="lbl">Всички</span>`;
@@ -186,14 +231,12 @@ function renderLeftRoots() {
     catsLeft.appendChild(li);
   }
 
-  // Hover selects root → updates L2
   catsLeft.addEventListener("mouseover", (e)=>{
     const li = e.target.closest("li.root-item");
     if (!li) return;
     setActiveRoot(li.dataset.groupId || "");
   });
 
-  // Click selects & applies
   catsLeft.addEventListener("click", (e)=>{
     const li = e.target.closest("li.root-item");
     if (!li) return;
@@ -205,7 +248,6 @@ function renderLeftRoots() {
   });
 }
 
-// Render vertical L2 list with L3 flyouts (your CSS handles hover)
 function renderRightColumns(rootId) {
   if (!catsRight || !GROUP_TREE) return;
   catsRight.innerHTML = "";
@@ -246,7 +288,6 @@ function renderRightColumns(rootId) {
 
   catsRight.appendChild(ul);
 
-  // Gentle delayed close tolerance for L3 (match Matching behavior)
   const DELAY = 260;
   ul.querySelectorAll('.l2-item').forEach(li => {
     let t = null;
@@ -259,7 +300,6 @@ function renderRightColumns(rootId) {
     });
   });
 
-  // Click L2/L3 to apply
   ul.addEventListener("click", (e)=>{
     const a = e.target.closest("a[data-group-id]");
     if (!a) return;
@@ -315,7 +355,7 @@ function applyGroupSelection(id, label) {
   page = 1; loadCore(true);
 }
 
-// Open/close with slight delay (panel-level)
+// Panel open/close
 const PANEL_DELAY = 380;
 let panelTimer = null;
 function openCatsPanel() {
@@ -333,7 +373,6 @@ function scheduleClosePanel() {
   panelTimer = setTimeout(() => closeCatsPanel(), PANEL_DELAY);
 }
 
-// Bootstrap the menu (fetch /api/groups once)
 (async function initMegaMenu() {
   if (!catsMega) return;
   try {
@@ -347,7 +386,6 @@ function scheduleClosePanel() {
     console.warn("Groups load failed", e);
   }
 
-  // Hover & click open; delayed close; outside click closes
   catsTriggerWrap?.addEventListener("mouseenter", openCatsPanel);
   catsTriggerWrap?.addEventListener("mouseleave", scheduleClosePanel);
   catsTrigger?.addEventListener("click", (e)=>{
@@ -359,7 +397,7 @@ function scheduleClosePanel() {
 })();
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Columns popover (unchanged)
+   Columns popover
    ──────────────────────────────────────────────────────────────────────────── */
 const COLS_KEY = "compare_cols_v1";
 const ALL_COLS = ["praktiker","mrbricolage","mashinibg"];
@@ -522,14 +560,18 @@ document.addEventListener("click", (e)=>{
   colMenu.style.display = "none";
 });
 
-// ---------------- State ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   State / Styles
+   ──────────────────────────────────────────────────────────────────────────── */
 let page = 1;
-const PER_PAGE = 50;
+const PER_PAGE   = 50;     // fixed page size (like Matching)
+const FETCH_LIMIT= 2000;   // server fetch size used to build pages client-side
+
 let lastRows = [];    // raw rows from /api/compare
 let lastSite = "all";
 let lastTag  = "";
 
-// ---------------- CSS (spinner, highlights, price grid, badge, alignment) ----------------
+// CSS bits
 (function injectCSS(){
   if (document.getElementById("compare-extra-css")) return;
   const s = document.createElement("style");
@@ -565,49 +607,14 @@ let lastTag  = "";
       padding:1px 6px;
       background:#fff1e2; color:#8d4a12;
     }
-
-    .col-wrap{ position:relative; display:inline-block; }
-    .col-btn{
-      display:inline-flex; align-items:center; gap:.25rem;
-      padding:6px 10px; border-radius:10px; border:1px solid var(--border);
-      background:#fff; cursor:pointer; margin-left:.5rem;
-      box-shadow: 0 1px 2px rgba(0,0,0,.04);
-    }
-    .col-btn:hover{ background:#f9fafb; }
-    .col-menu{
-      position:absolute;
-      top: calc(100% + 8px);
-      left: 0;
-      background:#fff; border:1px solid var(--border); border-radius:12px;
-      box-shadow: 0 12px 24px rgba(0,0,0,.15);
-      padding:8px; width:240px; z-index:30;
-    }
-    .col-title{ font-weight:700; font-size:12px; color:#374151; padding:6px 6px 4px; }
-    .col-row{
-      display:flex; align-items:center; justify-content:space-between;
-      gap:8px; padding:6px 6px; border-radius:8px;
-    }
-    .col-row:hover{ background:#f5f7fb; }
-    .col-left{ display:flex; align-items:center; gap:.5rem; cursor:pointer; }
-    .col-left input{ width:16px; height:16px; }
-    .col-actions button{
-      border:1px solid var(--border); background:#fff; border-radius:8px;
-      padding:2px 8px; cursor:pointer;
-    }
-    .col-actions button:disabled{ opacity:.35; cursor:default; }
-    .col-footer{
-      display:flex; justify-content:space-between; gap:8px; padding:6px;
-    }
-    .col-footer button{
-      border:1px solid var(--border); background:#fff; border-radius:10px;
-      padding:6px 10px; cursor:pointer;
-    }
     .muted{ font-size:12px; color:#6b7280; padding:6px; }
   `;
   document.head.appendChild(s);
 })();
 
-// ---------------- Spinner & Toasts ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Spinner & Toast
+   ──────────────────────────────────────────────────────────────────────────── */
 function withSpinner(btn, runningText, fn) {
   return async (...args) => {
     if (!btn) return fn(...args);
@@ -641,7 +648,9 @@ function toast(msg, type="ok") {
   setTimeout(() => { try{wrap.removeChild(box);}catch{} }, 2200);
 }
 
-// ---------------- Utils ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Utils
+   ──────────────────────────────────────────────────────────────────────────── */
 function resetHead(cols) {
   thead.innerHTML = "";
   const tr = document.createElement("tr");
@@ -664,41 +673,27 @@ function fmtPlain(n) {
   if (v === null) return "N/A";
   return v.toFixed(2);
 }
-
 function isOnPraktis(url) {
   if (!url) return false;
   const u = String(url).trim();
-  return u.startsWith("https://praktis.bg/") && u !== "https://praktis.bg/";
+  return u.startsWith("https://praktis.bg/") && u !== "https://praktis.bg";
 }
-
-// effective price = promo if present else regular
 const effective = (promo, regular) => {
   const p = toNum(promo);
   const r = toNum(regular);
   return p !== null ? p : r;
 };
-
-// Label shortener (BG)
 function abbrLabel(lbl) {
   if (!lbl) return "";
   const s = lbl.trim();
-  const map = {
-    "Оферта на седмицата": "ОС",
-    "Оферта на деня": "ОД",
-    "Топ оферта": "ТО",
-    "В брошура": "БР",
-  };
+  const map = { "Оферта на седмицата":"ОС", "Оферта на деня":"ОД", "Топ оферта":"ТО", "В брошура":"БР" };
   if (map[s]) return map[s];
   return s.split(/\s+/).map(w => w[0]).join("").toUpperCase().slice(0, 3);
 }
-
-// Read label from competitor_label
 function getRowLabel(row) {
   const v = row && row.competitor_label;
   return (typeof v === "string" && v.trim()) ? v.trim() : null;
 }
-
-// unified price block (stacked; consistent height; label inline with arrow)
 function priceCellHTML(promo, regular, url=null, labelText=null) {
   const eff = effective(promo, regular);
   const showOld = (toNum(regular) !== null && toNum(promo) !== null && toNum(promo) < toNum(regular));
@@ -718,8 +713,6 @@ function priceCellHTML(promo, regular, url=null, labelText=null) {
     </div>
   `;
 }
-
-// Highlight using EFFECTIVE prices; N/A ignored
 function classForEffective(valEff, allEff) {
   const v = toNum(valEff);
   const nums = allEff.map(toNum).filter(n => n !== null);
@@ -730,7 +723,7 @@ function classForEffective(valEff, allEff) {
   return "";
 }
 
-// ---- Matching-style brand helpers ----
+// Matching-style brand helpers
 const normBrand = (s) => (s || "").toLowerCase().replace(/[.\s]/g, "");
 function currentBrandFilter() {
   const raw = (brandSelect.value || brandInput.value || "").trim();
@@ -744,8 +737,7 @@ function brandMatches(rowBrandRaw, filterRaw) {
   return rowNorm.includes(filtNorm);
 }
 
-// ---- Categories (client-side fallback) ----
-// Build a set of descendant ids for a selected group id using the GROUP_TREE we already built.
+// Categories helpers
 function getDescendantIds(rootId) {
   const out = new Set();
   if (!GROUP_TREE || !rootId) return out;
@@ -757,36 +749,27 @@ function getDescendantIds(rootId) {
   })(start);
   return out;
 }
-
-// Try to read group ids from a row regardless of schema shape.
 function extractRowGroupIds(row) {
-  // Common shapes we’ve seen across your project
   if (Array.isArray(row.group_ids))               return row.group_ids.map(Number);
   if (Array.isArray(row.product_group_ids))       return row.product_group_ids.map(Number);
   if (Array.isArray(row.groups))                  return row.groups.map(g => Number(g?.id ?? g));
   if (Array.isArray(row.product_groups))          return row.product_groups.map(g => Number(g?.id ?? g));
   if (row.group_id != null)                       return [Number(row.group_id)];
   if (row.product_group_id != null)               return [Number(row.product_group_id)];
-  // Nothing useful
   return [];
 }
-
-// Apply a category filter to flat compare rows (single-site) OR to pivot rows (all-sites)
 function filterByGroup(rows, selectedGroupId, isPivot=false) {
   if (!selectedGroupId) return rows;
   const want = getDescendantIds(selectedGroupId);
   if (want.size === 0) return rows;
 
   if (!isPivot) {
-    // rows from /api/compare (flat)
     return rows.filter(r => {
       const ids = extractRowGroupIds(r);
       if (!ids.length) return false;
       return ids.some(id => want.has(Number(id)));
     });
   }
-
-  // PIVOT: prefer the group_ids we attached in pivotAll()
   const withInline = rows.filter(p => Array.isArray(p.group_ids) && p.group_ids.length > 0);
   if (withInline.length > 0) {
     return rows.filter(p => {
@@ -794,19 +777,19 @@ function filterByGroup(rows, selectedGroupId, isPivot=false) {
       return ids.some(id => want.has(Number(id)));
     });
   }
-
-  // Fallback to old SKU mapping if pivot didn’t carry any groups at all
   const goodSkus = new Set(
     lastRows.filter(r => {
       const ids = extractRowGroupIds(r);
       return ids.length && ids.some(id => want.has(Number(id)));
     }).map(r => r.product_sku)
   );
-  if (goodSkus.size === 0) return rows; // nothing to go on → no-op
+  if (goodSkus.size === 0) return rows;
   return rows.filter(p => goodSkus.has(p.code));
 }
 
-// ---------------- Data fetch ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Data fetch
+   ──────────────────────────────────────────────────────────────────────────── */
 async function fetchBrands() {
   try {
     const r = await fetch(`${API}/api/products/brands`);
@@ -822,7 +805,6 @@ async function fetchBrands() {
     ensureBrandPlaceholder();
   }
 }
-
 async function fetchAssetsForSkus(skus) {
   if (!skus?.length) return {};
   const qs = encodeURIComponent(skus.join(","));
@@ -831,7 +813,7 @@ async function fetchAssetsForSkus(skus) {
   return r.json();
 }
 
-// IMPORTANT: now uses category_id (not group_id)
+// Backend rows (flat)
 async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null, brand=null, q=null, category_id=null }) {
   const params = new URLSearchParams();
   params.set("site_code", site_code);
@@ -846,14 +828,15 @@ async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null,
   return r.json();
 }
 
-// ---------------- Pivot (All sites) ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Pivot (All sites)
+   ──────────────────────────────────────────────────────────────────────────── */
 function pivotAll(flatRows) {
   const map = new Map();
   for (const r of flatRows) {
     const sku = r.product_sku ?? "";
     if (!sku) continue;
 
-    // pull group ids from the raw row once
     const rowGroups = extractRowGroupIds(r);
 
     if (!map.has(sku)) {
@@ -862,21 +845,15 @@ function pivotAll(flatRows) {
         name: r.product_name ?? "N/A",
         brand: r.product_brand || r.brand || null,
         tags:  r.product_tags || r.tags || null,
-
-        // keep praktis prices
         praktis_regular: toNum(r.product_price_regular),
         praktis_promo:   toNum(r.product_price_promo),
-
-        // NEW: carry product group ids for client-side filtering
         group_ids: rowGroups && rowGroups.length ? rowGroups.slice() : [],
-
         // competitor slots
         praktiker_regular: null, praktiker_promo: null, praktiker_url: null, praktiker_label: null,
         mrbricolage_regular: null, mrbricolage_promo: null, mrbricolage_url: null, mrbricolage_label: null,
         mashinibg_regular: null, mashinibg_promo: null, mashinibg_url: null, mashinibg_label: null,
       });
     } else {
-      // If we didn't have groups yet, try set them from a later row
       const agg = map.get(sku);
       if ((!agg.group_ids || agg.group_ids.length === 0) && rowGroups && rowGroups.length) {
         agg.group_ids = rowGroups.slice();
@@ -903,7 +880,9 @@ function pivotAll(flatRows) {
   return Array.from(map.values());
 }
 
-// ---------------- Price status filters use EFFECTIVE prices ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Price status helpers
+   ──────────────────────────────────────────────────────────────────────────── */
 function statusSingle(row) {
   const our = effective(row.product_price_promo, row.product_price_regular);
   const comp = effective(row.competitor_price_promo, row.competitor_price_regular);
@@ -926,6 +905,13 @@ function statusAll(p) {
   return "equal";
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   Renderers
+   ──────────────────────────────────────────────────────────────────────────── */
+function priceCell(promo, regular, url, cls, label=null) {
+  return `<td class="${cls}">${priceCellHTML(promo, regular, url, label)}</td>`;
+}
+
 function renderSingle(rows, site, assetsBySku) {
   const presenceMode = (document.getElementById("praktisPresence")?.value || "");
   if (presenceMode) {
@@ -936,11 +922,7 @@ function renderSingle(rows, site, assetsBySku) {
     });
   }
   const siteKey = (site || "").toLowerCase();
-  const isPrak  = siteKey.includes("praktiker");
-  const isMash  = siteKey.includes("mashin");
-  const isBric  = siteKey.includes("bricol");
-
-  const headers = isPrak ? [
+  const headers = siteKey.includes("praktiker") ? [
       "Praktis Code","Image","Praktis Name","Praktiker Code","Praktiker Name",
       "Praktis Price","Praktiker Price",
     ] : siteKey.includes("bricol") ? [
@@ -968,7 +950,7 @@ function renderSingle(rows, site, assetsBySku) {
     const clsOur  = classForEffective(ourEff,   [ourEff, theirEff]);
     const clsComp = classForEffective(theirEff, [ourEff, theirEff]);
 
-    const competitorLabel = (isPrak || isMash || isBric) ? getRowLabel(r) : null;
+    const compLabel = getRowLabel(r);
 
     return `
       <tr>
@@ -977,13 +959,8 @@ function renderSingle(rows, site, assetsBySku) {
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(r.product_name ?? "N/A")}</a>` : escapeHtml(r.product_name ?? "N/A")}</td>
         <td>${escapeHtml(r.competitor_sku ?? "")}</td>
         <td>${compLink}</td>
-        <td class="${clsOur}">${priceCellHTML(r.product_price_promo, r.product_price_regular, null)}</td>
-        <td class="${clsComp}">${priceCellHTML(
-            r.competitor_price_promo,
-            r.competitor_price_regular,
-            r.competitor_url || null,
-            competitorLabel
-        )}</td>
+        ${priceCell(r.product_price_promo, r.product_price_regular, null, clsOur)}
+        ${priceCell(r.competitor_price_promo, r.competitor_price_regular, r.competitor_url || null, clsComp, compLabel)}
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
@@ -1005,8 +982,7 @@ function renderAllPage(pivotPage, assetsBySku) {
     pivotPage = pivotPage.filter(p => {
       for (const key of activeCols) {
         const meta = COL_META[key];
-        const hasPrice =
-          toNum(p[meta.promo]) !== null || toNum(p[meta.regular]) !== null;
+        const hasPrice = toNum(p[meta.promo]) !== null || toNum(p[meta.regular]) !== null;
         if (hasPrice) return true;
       }
       return false;
@@ -1042,12 +1018,9 @@ function renderAllPage(pivotPage, assetsBySku) {
     const praktisUrl = asset.product_url || null;
     const praktisImg = asset.image_url || null;
 
-    const cell = (promo, regular, url, cls, label=null) =>
-      `<td class="${cls}">${priceCellHTML(promo, regular, url, label)}</td>`;
-
     const compCells = compEntries.map(e => {
       const cls = classForEffective(e.eff, allEff);
-      return cell(e.promo, e.reg, e.url, cls, e.label);
+      return priceCell(e.promo, e.reg, e.url, cls, e.label);
     }).join("");
 
     return `
@@ -1055,103 +1028,213 @@ function renderAllPage(pivotPage, assetsBySku) {
         <td>${escapeHtml(p.code)}</td>
         ${imgTd(praktisImg)}
         <td>${praktisUrl ? `<a href="${escapeHtml(praktisUrl)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</td>
-        ${cell(p.praktis_promo, p.praktis_regular, null, clsP)}
+        ${priceCell(p.praktis_promo, p.praktis_regular, null, clsP)}
         ${compCells}
       </tr>`;
   }).join("");
   tbody.innerHTML = html;
 }
 
-// ---------------- Main load ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Pager UI — numeric buttons with ellipses (like Matching)
+   ──────────────────────────────────────────────────────────────────────────── */
+function clearNode(n){ if(!n) return; while(n.firstChild) n.removeChild(n.firstChild); }
+function makePageBtn(n, active=false) {
+  const b = document.createElement("button");
+  b.textContent = String(n);
+  b.disabled = active;
+  b.style.minWidth = "34px";
+  b.style.height   = "34px";
+  b.style.borderRadius = "10px";
+  b.style.border = "1px solid var(--border, #26324c)";
+  b.style.background = active ? "var(--accent, #3b82f6)" : "rgba(255,255,255,0.04)";
+  b.style.color = active ? "#fff" : "inherit";
+  b.style.fontWeight = active ? "700" : "500";
+  if (!active) b.onclick = () => { page = n; window.scrollTo({top:0, behavior:"smooth"}); loadCore(false); };
+  return b;
+}
+function makeDots(){
+  const s = document.createElement("span");
+  s.textContent = "…";
+  s.style.opacity = ".7";
+  return s;
+}
+function renderNumbers(totalPages){
+  if (!pageInfo) return;
+  clearNode(pageInfo);
+  let start = Math.max(1, page - 2);
+  let end   = Math.min(totalPages, page + 2);
+  if (end - start < 4) {
+    start = Math.max(1, Math.min(start, totalPages - 4));
+    end   = Math.min(totalPages, Math.max(end, 5));
+  }
+  if (start > 1) {
+    pageInfo.appendChild(makePageBtn(1, page===1));
+    if (start > 2) pageInfo.appendChild(makeDots());
+  }
+  for (let i=start;i<=end;i++) pageInfo.appendChild(makePageBtn(i, i===page));
+  if (end < totalPages) {
+    if (end < totalPages-1) pageInfo.appendChild(makeDots());
+    pageInfo.appendChild(makePageBtn(totalPages, page===totalPages));
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Filters snapshot
+   ──────────────────────────────────────────────────────────────────────────── */
+function currentFilters() {
+  const site_code = siteSelect?.value || "all";
+  const q = (searchInput?.value || "").trim();
+  const tag_id = (tagFilter?.value || "").trim();
+  const brand = currentBrandFilter();
+  const category_id = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
+  const praktis_presence = (praktisPresence?.value || "");
+  return { site_code, q, tag_id, brand, category_id, praktis_presence };
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Main load
+   ──────────────────────────────────────────────────────────────────────────── */
 async function loadCore(refetch=true) {
   const site_code = siteSelect?.value || "all";
-  const limit     = Number(compareLimit?.value || 50);
   const selectedGroupId = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
+  const tagVal   = tagFilter?.value ?? "";
+  const qText    = (searchInput?.value || "").trim().toLowerCase();
+  const brandRaw = currentBrandFilter();
+  const priceF   = (priceSelect?.value || "");
+  const presenceVal = (praktisPresence?.value || "");
 
+  // 0) remove legacy "compareLimit" control if present (the old "200")
+  const oldLimit = document.getElementById("compareLimit");
+  if (oldLimit && oldLimit.parentNode) oldLimit.parentNode.removeChild(oldLimit);
+
+  // 1) (Re)fetch base rows from backend (includes category_id)
   if (refetch || site_code !== lastSite || (tagFilter?.value ?? "") !== lastTag) {
-    const tagVal = tagFilter?.value ?? "";
-    const q      = (searchInput?.value || "").trim();
-    const brand  = currentBrandFilter();
     lastRows = await fetchCompare({
-      site_code, limit, source: "snapshots",
-      tag_id: tagVal, brand, q,
-      category_id: selectedGroupId || null    // ← send category_id to backend
+      site_code, limit: FETCH_LIMIT, source: "snapshots",
+      tag_id: tagVal, brand: brandRaw, q: qText,
+      category_id: selectedGroupId || null
     }) || [];
     lastSite = site_code; lastTag = tagVal; page = 1;
   }
 
-  const qText   = (searchInput?.value || "").trim().toLowerCase();
-  const brandRaw= currentBrandFilter();
-  const priceF  = (priceSelect?.value || "");
-  const selectedTag = tagFilter?.value ?? "";
+  // Helper: apply basic filters (tag, q, brand, category, price)
+  const applyCommonFilters = (rowsOrPivot, isPivot) => {
+    let arr = rowsOrPivot.slice();
 
+    if (tagVal) {
+      arr = arr.filter(x => {
+        const tags = (isPivot ? x.tags : (x.product_tags || x.tags)) || [];
+        return Array.isArray(tags) ? tags.some(t => String(t.id) === String(tagVal)) : true;
+      });
+    }
+    if (qText) {
+      arr = arr.filter(x => {
+        if (isPivot) {
+          return (x.code || "").toLowerCase().includes(qText) ||
+                 (x.name || "").toLowerCase().includes(qText);
+        }
+        return [x.product_sku, x.product_name, x.product_barcode, x.competitor_sku, x.competitor_name]
+          .map(v => (v || "").toString().toLowerCase())
+          .some(s => s.includes(qText));
+      });
+    }
+    if (brandRaw) {
+      arr = arr.filter(x => brandMatches(isPivot ? x.brand : (x.product_brand || x.brand), brandRaw));
+    }
+    if (selectedGroupId) {
+      arr = filterByGroup(arr, selectedGroupId, isPivot);
+    }
+    if (priceF) {
+      arr = arr.filter(x => (isPivot ? statusAll(x) : statusSingle(x)) === priceF);
+    }
+    return arr;
+  };
+
+  // 2) Build data + count AFTER applying column visibility & presence filters
   if (site_code === "all") {
+    // base pivot
     let pivot = pivotAll(lastRows);
+    // apply common (non-presence) filters
+    pivot = applyCommonFilters(pivot, true);
 
-    if (selectedTag) {
+    // apply "active columns only" to COUNT as well
+    const activeCols = colOrder.slice();
+    if (activeCols.length > 0) {
       pivot = pivot.filter(p => {
-        const tags = p.tags || [];
-        return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
+        for (const key of activeCols) {
+          const meta = COL_META[key];
+          const hasPrice = toNum(p[meta.promo]) !== null || toNum(p[meta.regular]) !== null;
+          if (hasPrice) return true;
+        }
+        return false;
       });
     }
 
-    if (qText) {
-      pivot = pivot.filter(p =>
-        (p.code || "").toLowerCase().includes(qText) ||
-        (p.name || "").toLowerCase().includes(qText)
-      );
+    // presence-aware count -> need assets for all SKUs when filtering by presence
+    let totalPivotForCount = pivot;
+    if (presenceVal) {
+      const allSkus = totalPivotForCount.map(p => p.code);
+      const assetsMap = await fetchAssetsForSkus(allSkus);
+      totalPivotForCount = totalPivotForCount.filter(p => {
+        const a = assetsMap[p.code] || {};
+        const onSite = isOnPraktis(a.product_url || "");
+        return presenceVal === "present" ? onSite : !onSite;
+      });
     }
 
-    if (brandRaw) {
-      pivot = pivot.filter(p => brandMatches(p.brand, brandRaw));
-    }
+    const total = totalPivotForCount.length;
+    if (recordCount) recordCount.textContent = `${total} records`;
 
-    if (priceF) {
-      pivot = pivot.filter(p => statusAll(p) === priceF);
-    }
+    // 3) Pagination + render: fetch assets only for current page
+    const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+    if (page > totalPages) page = totalPages;
 
-    const total = pivot.length;
     const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
-    const slice = pivot.slice(start, end);
-    const assets = await fetchAssetsForSkus(slice.map(p => p.code));
-    renderAllPage(slice, assets);
-    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
+    const pageSlice = totalPivotForCount.slice(start, end);
+
+    const assets = await fetchAssetsForSkus(pageSlice.map(p => p.code));
+    renderAllPage(pageSlice, assets);
+
+    renderNumbers(totalPages);
+    if (prevPageBtn) prevPageBtn.disabled = (page <= 1);
+    if (nextPageBtn) nextPageBtn.disabled = (page >= totalPages);
   } else {
-    let rows = lastRows.slice();
+    // single-site
+    let rows = applyCommonFilters(lastRows.slice(), false);
 
-    if (selectedTag) {
-      rows = rows.filter(r => {
-        const tags = r.product_tags || r.tags || [];
-        return Array.isArray(tags) ? tags.some(t => String(t.id) === String(selectedTag)) : true;
+    // presence-aware count for single-site too
+    let rowsForCount = rows;
+    if (presenceVal) {
+      const allSkus = rowsForCount.map(r => r.product_sku).filter(Boolean);
+      const assetsMap = await fetchAssetsForSkus(allSkus);
+      rowsForCount = rowsForCount.filter(r => {
+        const a = assetsMap[r.product_sku] || {};
+        const onSite = isOnPraktis(a.product_url || "");
+        return presenceVal === "present" ? onSite : !onSite;
       });
     }
 
-    if (qText) {
-      rows = rows.filter(r =>
-        [r.product_sku, r.product_name, r.product_barcode, r.competitor_sku, r.competitor_name]
-          .map(x => (x || "").toString().toLowerCase())
-          .some(s => s.includes(qText))
-      );
-    }
+    const total = rowsForCount.length;
+    if (recordCount) recordCount.textContent = `${total} records`;
 
-    if (brandRaw) {
-      rows = rows.filter(r => brandMatches(r.product_brand || r.brand, brandRaw));
-    }
-
-    if (priceF) {
-      rows = rows.filter(r => statusSingle(r) === priceF);
-    }
-
-    const total = rows.length;
+    const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+    if (page > totalPages) page = totalPages;
     const start = (page - 1) * PER_PAGE, end = start + PER_PAGE;
-    const slice = rows.slice(start, end);
+    const slice = rowsForCount.slice(start, end);
+
     const assets = await fetchAssetsForSkus(slice.map(r => r.product_sku).filter(Boolean));
     renderSingle(slice, site_code, assets);
-    if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
+
+    renderNumbers(totalPages);
+    if (prevPageBtn) prevPageBtn.disabled = (page <= 1);
+    if (nextPageBtn) nextPageBtn.disabled = (page >= totalPages);
   }
 }
 
-// ---------------- Init & Events ----------------
+/* ────────────────────────────────────────────────────────────────────────────
+   Init & Events
+   ──────────────────────────────────────────────────────────────────────────── */
 async function init() {
   await loadSitesInto(siteSelect);
   if (!siteSelect.querySelector('option[value="all"]')) {
@@ -1170,52 +1253,38 @@ async function init() {
     }
   });
 
-  // Tags
   await loadTagsInto(tagFilter, true);
   tagFilter.addEventListener("change", () => { page = 1; loadCore(true); });
 
-  // Brands
   await fetchBrands();
   brandInput.addEventListener("input", () => { if (brandInput.value) brandSelect.value = ""; page = 1; loadCore(true); });
   brandSelect.addEventListener("change", () => { if (brandSelect.value) brandInput.value = ""; page = 1; loadCore(true); });
 
-  // Search
   let t; searchInput.addEventListener("input", () => {
     clearTimeout(t); t = setTimeout(() => { page = 1; loadCore(false); }, 300);
   });
   searchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); page = 1; loadCore(false); }});
 
-  // Price status
   priceSelect.addEventListener("change", () => { page = 1; loadCore(false); });
+  (document.getElementById("praktisPresence"))?.addEventListener("change", () => { page = 1; loadCore(false); });
 
-  // Praktis presence filter
-  (document.getElementById("praktisPresence"))?.addEventListener("change", () => {
-    page = 1; loadCore(false);
-  });
-
-  // Limit default (50 per page)
-  if (compareLimit) compareLimit.value = "50";
-
-  // Buttons & pager — spinner + toasts
   const onLoadLatest = withSpinner(loadLatestBtn, "Loading…", async () => { await loadCore(true); toast("Loaded latest data from DB"); });
   const onScrapeNow  = withSpinner(scrapeNowBtn,  "Scraping…", async () => {
     const site_code = siteSelect.value || "all";
-    const limit = Number(compareLimit?.value || 50);
-    await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(site_code)}&limit=${encodeURIComponent(limit)}`, { method: "POST" });
+    await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(site_code)}&limit=${encodeURIComponent(FETCH_LIMIT)}`, { method: "POST" });
     await loadCore(true);
     toast("Scrape finished");
   });
 
   loadLatestBtn?.addEventListener("click", () => { page = 1; onLoadLatest(); });
   scrapeNowBtn?.addEventListener("click",  () => { page = 1; onScrapeNow(); });
-  prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); loadCore(false); });
-  nextPageBtn?.addEventListener("click",   () => { page = page + 1; loadCore(false); });
+  prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); window.scrollTo({top:0,behavior:"smooth"}); loadCore(false); });
+  nextPageBtn?.addEventListener("click",   () => { page = page + 1; window.scrollTo({top:0,behavior:"smooth"}); loadCore(false); });
 
-  // ------- EXACT EXPORT OF CURRENT "ALL SITES" VIEW (filters + columns) -------
+  // Export (unchanged; still honors filters)
   function exportViaBackend() {
     const site_code = siteSelect?.value || "all";
 
-    // ---- collect active filters
     const q = (document.getElementById("searchInput")?.value || "").trim();
     const tag_id = (document.getElementById("tagFilter")?.value || "").trim();
 
@@ -1235,7 +1304,6 @@ async function init() {
 
     const praktis_presence = (document.getElementById("praktisPresence")?.value || "").trim(); // "" | present | missing
 
-    // ---- derive visible competitor columns
     const baseCols = ["praktis_code", "image", "praktis_name", "praktis_price"];
     let competitorTokens = [];
 
@@ -1267,16 +1335,12 @@ async function init() {
 
     const columns = site_code === "all" ? baseCols.concat(competitorTokens) : null;
 
-    // ---- pagination (export exactly current page/size)
-    const per_page =
-      Number(document.getElementById("pageSize")?.value) ||
-      (typeof window.perPage !== "undefined" ? Number(window.perPage) : 50);
-    const currentPage = (typeof window.page !== "undefined") ? Number(window.page) : 1;
+    const per_page = PER_PAGE;
+    const currentPage = Number(page) || 1;
 
-    // ---- build params
     const params = new URLSearchParams();
     params.set("site_code", site_code);
-    params.set("limit", "2000");
+    params.set("limit", String(FETCH_LIMIT));
     params.set("source", "snapshots");
 
     if (q)                 params.set("q", q);
@@ -1296,7 +1360,6 @@ async function init() {
     window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
   }
 
-  // Clean re-bind
   {
     const btn = document.getElementById("exportExcel") || document.querySelector("[data-export], .export");
     if (btn) {
@@ -1306,7 +1369,7 @@ async function init() {
     }
   }
 
-  // First render
+  // Initial load
   await loadCore(true);
 }
 

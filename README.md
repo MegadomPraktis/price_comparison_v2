@@ -21,6 +21,6 @@ DB:
 - fixing scrape and refresh buttons to be only on showed items and doing all records if endpoint is called
 - fixing what is shown on the page with how many pages and records visualization
 - email functionality rework
-- fix the category filter not filtering 
 - Fixing the input of praktis data, reworking the endpoints
 - aligning the promo price for products in the comparison tab
+- Fixing the category menu layout
