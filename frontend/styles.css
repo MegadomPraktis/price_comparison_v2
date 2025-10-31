@@ -471,3 +471,230 @@ section thead th {
   color: #354158 !important;
   border-bottom: 1px solid var(--border-strong) !important;
 }
+/* ── Category MEGA MENU (Matching tab) ───────────────────────────────────── */
+.cats-trigger-wrap{ position:relative; display:inline-block; }
+.cats-trigger{ border:1px solid var(--border); background:var(--card); color:var(--text);
+  padding:6px 10px; border-radius:10px; cursor:pointer; }
+.cats-trigger:hover{ border-color:var(--accent); box-shadow:0 1px 0 rgba(0,0,0,.15) inset; }
+
+.cats-mega{
+  position:absolute; top:calc(100% + 8px); left:0;
+  width:min(1100px, 96vw);
+  display:none;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:14px;
+  box-shadow:0 20px 50px rgba(0,0,0,.35);
+  padding:10px;
+  z-index:50;
+}
+.cats-trigger-wrap.open .cats-mega{ display:flex; }
+.cats-trigger-wrap:hover .cats-mega{ display:flex; }
+
+.cats-left{
+  width:260px; min-width:220px; max-height:70vh; overflow:auto;
+  border-right:1px solid var(--border);
+  padding-right:8px;
+}
+.cats-right{
+  flex:1; min-width:400px; max-height:70vh; overflow:auto;
+  padding-left:12px;
+}
+.cats-left-list{ list-style:none; margin:0; padding:0; }
+.cats-left-list .root-item{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; border-radius:10px; cursor:pointer;
+}
+.cats-left-list .root-item:hover{ background:rgba(59,130,246,.10); }
+.cats-left-list .root-item.active{ background:rgba(59,130,246,.18); }
+.cats-left .ico{ width:22px; text-align:center; opacity:.9; }
+.cats-left .lbl{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+.cats-columns{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:14px; }
+.cats-columns .col{ padding:6px 4px; }
+.cats-columns .lvl2{ margin:0 0 8px 0; font-weight:600; font-size:0.98rem; }
+.cats-columns .lvl2 a{ color:var(--text); text-decoration:none; border-bottom:1px dashed transparent; }
+.cats-columns .lvl2 a:hover{ border-bottom-color:var(--accent); }
+.cats-columns .lvl3{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
+.cats-columns .lvl3 a{ color:var(--text); text-decoration:none; font-size:0.96rem; }
+.cats-columns .lvl3 a:hover{ text-decoration:underline; }
+
+/* little label next to trigger */
+.group-selected{ padding:2px 8px; border:1px dashed var(--border); border-radius:999px; margin-left:6px; }
+.btn-clear{
+  background:transparent; border:1px solid var(--border); color:var(--muted);
+  border-radius:8px; padding:2px 8px; cursor:pointer; margin-left:6px;
+}
+.btn-clear:hover{ border-color:var(--accent); color:var(--text); }
+
+/* Hide legacy <select> if you want */
+.ghost-select{ display:none; }
+/* ── Mega-menu: Level-2 → Level-3 hover flyout + close-delay friendly hit areas ── */
+.cats-columns .col { position: relative; }
+.cats-columns .lvl2 { margin:0 0 6px 0; font-weight:700; font-size:0.98rem; }
+.cats-columns .lvl2 > a { color: var(--text); text-decoration:none; border-bottom:1px dashed transparent; padding:4px 2px; display:inline-block; }
+.cats-columns .lvl2 > a.has-children::after { content:"▸"; margin-left:6px; font-size:.8rem; opacity:.7; }
+.cats-columns .lvl2 > a:hover { border-bottom-color: var(--accent); }
+
+/* Hide L3 by default; show as flyout when hovering the L2 row/column */
+.cats-columns .lvl3.fly3 {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px);
+  min-width: 240px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  z-index: 60;
+}
+.cats-columns .col:hover > .lvl3.fly3,
+.cats-columns .lvl2:hover + .lvl3.fly3 {
+  display: block;
+}
+
+.cats-columns .lvl3.fly3 a {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.95rem;
+  display: block;
+  padding: 3px 2px;
+  border-radius: 6px;
+}
+.cats-columns .lvl3.fly3 a:hover { background: rgba(59,130,246,.12); }
+
+/* Make the whole panel tolerant to small pointer gaps */
+.cats-mega { padding: 10px 10px 10px 10px; }
+.cats-left { padding-right: 10px; }
+.cats-right { padding-left: 12px; }
+
+/* Keep previous styles used by the menu */
+.cats-trigger-wrap{ position:relative; display:inline-block; }
+.cats-trigger{ border:1px solid var(--border); background:var(--card); color:var(--text);
+  padding:6px 10px; border-radius:10px; cursor:pointer; }
+.cats-trigger:hover{ border-color:var(--accent); box-shadow:0 1px 0 rgba(0,0,0,.15) inset; }
+.cats-mega{
+  position:absolute; top:calc(100% + 8px); left:0;
+  width:min(1100px, 96vw);
+  display:none;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:14px;
+  box-shadow:0 20px 50px rgba(0,0,0,.35);
+  padding:10px;
+  z-index:50;
+}
+.cats-trigger-wrap.open .cats-mega{ display:flex; }
+.cats-left{
+  width:260px; min-width:220px; max-height:70vh; overflow:auto;
+  border-right:1px solid var(--border);
+}
+.cats-right{
+  flex:1; min-width:400px; max-height:70vh; overflow:auto;
+}
+.cats-left-list{ list-style:none; margin:0; padding:0; }
+.cats-left-list .root-item{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; border-radius:10px; cursor:pointer;
+}
+.cats-left-list .root-item:hover{ background:rgba(59,130,246,.10); }
+.cats-left-list .root-item.active{ background:rgba(59,130,246,.18); }
+.cats-left .ico{ width:22px; text-align:center; opacity:.9; }
+.cats-left .lbl{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* ── Mega-menu: vertical L2 list + L3 flyout next to hovered L2 ── */
+.cats-right { position: relative; }
+
+.l2-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;  /* stack L2 one under another */
+  gap: 6px;
+}
+
+.l2-item {
+  position: relative;
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+.l2-item:hover { background: rgba(59,130,246,.08); }
+
+.l2-link {
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: none;
+  display: inline-block;
+  padding: 2px 0;
+}
+.l2-link.has-children::after {
+  content: "▸";
+  margin-left: 6px;
+  font-size: .8rem;
+  opacity: .7;
+}
+
+/* Level-3 appears to the right of the hovered L2 */
+.l3-fly {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: calc(100% + 10px);
+  min-width: 260px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  z-index: 60;
+}
+.l2-item:hover > .l3-fly { display: block; }
+
+.l3-fly li { list-style: none; }
+.l3-fly a {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: .95rem;
+}
+.l3-fly a:hover { background: rgba(59,130,246,.12); }
+/* --- FIX: allow L3 flyout to be visible next to hovered L2 --- */
+.cats-mega { overflow: visible; } /* make sure outer panel doesn't clip */
+.cats-mega .cats-right{
+  overflow: visible !important;  /* overrides earlier overflow:auto */
+  position: relative;            /* anchor for absolutely-positioned children */
+}
+
+/* ensure each L2 row is a positioning context */
+.cats-mega .l2-item{ position: relative; }
+
+/* L3 flyout: snug to L2 and tolerant to small cursor moves */
+.cats-mega .l3-fly{
+  display: none;
+  position: absolute;
+  top: 0;
+  left: calc(100% - 2px);        /* was: 100% + 10px → bring it closer */
+  min-width: 260px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  z-index: 100;
+}
+
+/* show on hover OR when JS gives a brief 'open' class */
+.cats-mega .l2-item:hover > .l3-fly,
+.cats-mega .l2-item.open  > .l3-fly{
+  display: block;
+}

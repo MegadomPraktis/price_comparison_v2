@@ -23,6 +23,8 @@ from app.routers import email as r_email
 from app.routers import export as r_export
 # NEW: analytics router
 from app.routers import analytics as r_analytics
+from app.routers import groups as r_groups
+
 
 from app.registry import register_default_scrapers
 
@@ -51,6 +53,7 @@ app.include_router(r_email.router, prefix="/api", tags=["email"])
 app.include_router(r_export.router, prefix="/api", tags=["export"])
 # NEW
 app.include_router(r_analytics.router, prefix="/api", tags=["analytics"])
+app.include_router(r_groups.router,     prefix="/api", tags=["groups"])
 
 @app.on_event("startup")
 def startup():

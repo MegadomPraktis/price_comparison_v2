@@ -180,19 +180,19 @@ def build_rows_from_snapshots(
     return rows
 
 
-# ---------------- NEW: retention helper ----------------
-def _enforce_snapshot_retention(session: Session, site_id: int, key_sku: Optional[str], key_barcode: Optional[str]) -> None:
+def _enforce_snapshot_retention(session, site_id: int, key_sku: str | None, key_barcode: str | None) -> None:
     """
-    Keep snapshots for a (site, key) for up to 6 months OR max 10 newest.
-    'key' prefers competitor_sku; falls back to competitor_barcode.
+    Keep at most 10 newest snapshots for (site_id, key) where key is competitor_sku (preferred) or competitor_barcode.
+    Also prunes anything older than 6 months (optional safety).
     """
+    from app.models import PriceSnapshot
+
     key = key_sku or key_barcode
     if not key:
         return
 
+    # Optional time-based pruning (kept from before)
     cutoff = datetime.utcnow() - timedelta(days=183)
-
-    # delete older than 6 months
     session.execute(
         delete(PriceSnapshot).where(
             PriceSnapshot.site_id == site_id,
@@ -202,45 +202,38 @@ def _enforce_snapshot_retention(session: Session, site_id: int, key_sku: Optiona
     )
     session.flush()
 
-    # ensure only 10 newest remain
-    rows = session.execute(
+    # Size-based pruning: keep 10 newest
+    ids_desc = session.execute(
         select(PriceSnapshot.id)
         .where(
             PriceSnapshot.site_id == site_id,
             or_(PriceSnapshot.competitor_sku == key, PriceSnapshot.competitor_barcode == key),
         )
-        .order_by(PriceSnapshot.ts.desc())
+        .order_by(PriceSnapshot.ts.desc(), PriceSnapshot.id.desc())
     ).scalars().all()
 
-    if len(rows) > 10:
-        to_delete = rows[10:]
+    if len(ids_desc) > 10:
+        to_delete = ids_desc[10:]
         session.execute(delete(PriceSnapshot).where(PriceSnapshot.id.in_(to_delete)))
         session.flush()
 
 
-# replace the whole function with this
-async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int = 200) -> int:
-    """
-    Iterate latest N matches for this site and persist snapshots WITHOUT holding long DB locks.
+import math
 
-    Strategy:
-      1) Read the list of (Match, Product) to process quickly, then END the read transaction
-         so no shared locks are held while we hit the network.
-      2) Perform all scraping with NO database session/transaction open.
-      3) Persist results in SMALL CHUNKS, each with its own short-lived session/transaction,
-         so other users can continue to read/write while scraping runs.
+async def scrape_and_snapshot(session, scraper, limit: int = 200) -> int:
     """
-    from sqlalchemy import select, desc, text as _sql_text
+    Scrape recent matches for the site and persist snapshots **only on change**.
+    Also enforces 'keep 10 newest per key' retention after inserts.
+    """
+    from sqlalchemy import select, desc, text as _sql_text, or_
     from app.models import Product, Match, PriceSnapshot, CompetitorSite
     from app.db import get_session
     from datetime import datetime as _dt
 
-    # --- 1) quick lookups using the provided session
-    # lower impact isolation for the read phase (SQL Server)
+    # --- phase 1: lightweight reads
     try:
         session.execute(_sql_text("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"))
     except Exception:
-        # if the dialect/driver refuses, it's still safe to proceed
         pass
 
     site = session.execute(
@@ -258,49 +251,91 @@ async def scrape_and_snapshot(session: Session, scraper: BaseScraper, limit: int
     )
     to_process = session.execute(qmatch).all()
 
-    # END the read transaction right now so we don't hold any shared locks while scraping.
+    # end read tx before network
     try:
         session.rollback()
     except Exception:
-        pass  # safe if caller manages tx differently
+        pass
 
-    # --- 2) network scraping without any DB session open
+    # --- phase 2: scrape without DB locks
     results = []
     for m, p in to_process:
         try:
             detail = await scraper.fetch_product_by_match(m, p)
         except Exception:
-            # be resilient: skip problematic items, keep going
             continue
         if not detail:
             continue
         results.append((m, detail))
 
-    # --- 3) short, chunked writes to keep transactions brief
+    # --- phase 3: short, chunked writes with change detection + retention
     written = 0
     CHUNK = 50
+    EPS = 0.005  # price tolerance for equals
+
+    def _num(v):
+        try:
+            return None if v is None else float(v)
+        except Exception:
+            return None
+
+    def _eq_price(a, b):
+        a = _num(a); b = _num(b)
+        if a is None and b is None: return True
+        if a is None or b is None:  return False
+        return math.isclose(a, b, abs_tol=EPS)
 
     for i in range(0, len(results), CHUNK):
         chunk = results[i:i + CHUNK]
-        # fresh short-lived session for each chunk
         with get_session() as s2:
             try:
                 for m, detail in chunk:
+                    key_sku = (detail.competitor_sku or m.competitor_sku or None)
+                    key_bar = (detail.competitor_barcode or m.competitor_barcode or None)
+
+                    # Fetch latest snapshot for this key
+                    latest = s2.execute(_latest_snapshot_stmt(site.id, key_sku, key_bar)).scalars().first()
+
+                    # Compare fields; write only if something changed
+                    changed = False
+                    if latest is None:
+                        changed = True
+                    else:
+                        if (detail.name or None) != (latest.name or None):
+                            changed = True
+                        elif not _eq_price(detail.regular_price, latest.regular_price):
+                            changed = True
+                        elif not _eq_price(detail.promo_price, latest.promo_price):
+                            changed = True
+                        elif (detail.url or None) != (latest.url or None):
+                            changed = True
+                        elif (getattr(detail, "label", None) or None) != (latest.competitor_label or None):
+                            changed = True
+
+                    if not changed:
+                        # nothing changed → skip insert
+                        continue
+
                     s2.add(PriceSnapshot(
                         ts=_dt.utcnow(),
                         site_id=site.id,
-                        competitor_sku=detail.competitor_sku or m.competitor_sku,
-                        competitor_barcode=detail.competitor_barcode or m.competitor_barcode,
+                        competitor_sku=key_sku,
+                        competitor_barcode=key_bar,
                         name=detail.name,
-                        regular_price=detail.regular_price,
-                        promo_price=detail.promo_price,
-                        url=detail.url,
+                        regular_price=_num(detail.regular_price),
+                        promo_price=_num(detail.promo_price),
+                        url=(detail.url or None),
                         competitor_label=getattr(detail, "label", None),
                     ))
+                    s2.flush()
+
+                    # Retention: keep only the 10 newest for that key
+                    _enforce_snapshot_retention(s2, site.id, key_sku, key_bar)
+
+                    written += 1
+
                 s2.commit()
-                written += len(chunk)
             except Exception:
-                # do not block the whole scrape if a chunk fails
                 try: s2.rollback()
                 except: pass
                 # continue with remaining chunks

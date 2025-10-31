@@ -18,6 +18,29 @@ export async function loadSitesInto(selectEl) {
   });
 }
 
+// --- NEW: load groups (categories) into a <select>
+export async function loadGroupsInto(selectEl, withAllOption = true) {
+  const r = await fetch(`${API}/api/groups`);
+  if (!r.ok) {
+    console.error("Failed to load groups", r.status);
+    return;
+  }
+  const data = await r.json();
+  selectEl.innerHTML = "";
+  if (withAllOption) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— All categories —";
+    selectEl.appendChild(opt);
+  }
+  data.forEach(g => {
+    const opt = document.createElement("option");
+    opt.value = String(g.id);
+    opt.textContent = g.name; // flat for now; can render tree later
+    selectEl.appendChild(opt);
+  });
+}
+
 // --- NEW
 export async function loadTagsInto(selectEl, withAllOption = true) {
   const r = await fetch(`${API}/api/tags`);

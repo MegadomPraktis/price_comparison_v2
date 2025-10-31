@@ -24,6 +24,18 @@ ProductTag = Table(
     UniqueConstraint("product_id", "tag_id", name="uq_product_tag")
 )
 
+# --- NEW: Categories (ERP groups) -------------------------------------------
+class Group(Base):
+    """
+    Categories tree from ERP. Minimal fields for filtering; you can extend later.
+    """
+    __tablename__ = "groups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("groups.id"), nullable=True, index=True)
+
+    parent = relationship("Group", remote_side=[id], backref="children", lazy="selectin")
+
 class Product(Base):
     __tablename__ = "products"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -36,6 +48,12 @@ class Product(Base):
     price_promo: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # --- NEW: FK to Group (exact column name requested: groupid)
+    groupid: Mapped[int | None] = mapped_column(
+        "groupid", Integer, ForeignKey("groups.id"), nullable=True, index=True
+    )
+    group = relationship("Group", lazy="joined")
 
     # --- NEW: m2m to tags
     tags = relationship("Tag", secondary=ProductTag, back_populates="products", lazy="selectin")

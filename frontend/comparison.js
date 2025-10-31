@@ -1,5 +1,5 @@
 // comparison.js — stacked price with consistent alignment; Praktiker label inline
-import { API, loadSitesInto, loadTagsInto, escapeHtml, fmtPrice } from "./shared.js";
+import { API, loadSitesInto, loadTagsInto, loadGroupsInto, escapeHtml, fmtPrice } from "./shared.js";
 
 // ---------------- DOM ----------------
 const siteSelect      = document.getElementById("siteSelect");
@@ -84,7 +84,255 @@ if (!praktisPresence) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   ALL-SITES COLUMNS PICKER (UI popover) — Praktis fixed; competitors toggle/reorder
+   CATEGORIES MEGA MENU — uses your style.css classes (same as Matching)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+// Hidden <select> (if present in HTML) kept in sync; JS fallback otherwise
+const groupFilter = document.getElementById("groupFilter");
+if (groupFilter && !groupFilter.options.length) await loadGroupsInto(groupFilter, true);
+let CURRENT_GROUP_ID = "";
+groupFilter?.addEventListener("change", () => {
+  CURRENT_GROUP_ID = groupFilter.value || "";
+  page = 1; loadCore(true);
+});
+
+// Create trigger + panel with your exact class names
+let catsTriggerWrap = document.getElementById("catsTriggerWrap");
+let catsTrigger, catsMega, catsLeft, catsRight;
+
+(function ensureCatsMenu() {
+  if (!toolbar) return;
+
+  if (!catsTriggerWrap) {
+    catsTriggerWrap = document.createElement("div");
+    catsTriggerWrap.id = "catsTriggerWrap";
+    catsTriggerWrap.className = "cats-trigger-wrap";
+    catsTriggerWrap.innerHTML = `
+      <button class="cats-trigger" id="catsTrigger" type="button">
+        Categories ▾
+      </button>
+      <div class="cats-mega" id="catsMega" aria-hidden="true">
+        <div class="cats-left">
+          <ul class="cats-left-list" id="catsLeft"></ul>
+        </div>
+        <div class="cats-right">
+          <div id="catsRight"></div>
+        </div>
+      </div>
+    `;
+    // put it at the very start of the toolbar (like Matching)
+    toolbar.insertBefore(catsTriggerWrap, toolbar.firstChild);
+  }
+
+  catsTrigger = document.getElementById("catsTrigger");
+  catsMega    = document.getElementById("catsMega");
+  catsLeft    = document.getElementById("catsLeft");
+  catsRight   = document.getElementById("catsRight");
+})();
+
+// Build tree exactly like Matching
+function buildGroupTree(list) {
+  const byId = new Map();
+  list.forEach(g => byId.set(g.id, { ...g, children: [] }));
+  const roots = [];
+  for (const node of byId.values()) {
+    if (node.parent_id == null) roots.push(node);
+    else {
+      const p = byId.get(node.parent_id);
+      if (p) p.children.push(node); else roots.push(node);
+    }
+  }
+  const sortByName = (a,b)=>a.name.localeCompare(b.name,'bg');
+  roots.sort(sortByName);
+  roots.forEach(function rec(n){
+    n.children.sort(sortByName);
+    n.children.forEach(rec);
+  });
+  return { roots, byId };
+}
+
+let GROUP_TREE = null;
+let ACTIVE_ROOT_ID = null;
+
+// Render L1 in .cats-left
+function renderLeftRoots() {
+  if (!catsLeft || !GROUP_TREE) return;
+  catsLeft.innerHTML = "";
+
+  // "Всички"
+  const liAll = document.createElement("li");
+  liAll.className = "root-item all";
+  liAll.innerHTML = `<span class="ico">📂</span><span class="lbl">Всички</span>`;
+  liAll.dataset.groupId = "";
+  catsLeft.appendChild(liAll);
+
+  for (const r of GROUP_TREE.roots) {
+    const li = document.createElement("li");
+    li.className = "root-item";
+    li.dataset.groupId = String(r.id);
+    li.innerHTML = `<span class="ico">📁</span><span class="lbl">${escapeHtml(r.name)}</span>`;
+    catsLeft.appendChild(li);
+  }
+
+  // Hover selects root → updates L2
+  catsLeft.addEventListener("mouseover", (e)=>{
+    const li = e.target.closest("li.root-item");
+    if (!li) return;
+    setActiveRoot(li.dataset.groupId || "");
+  });
+
+  // Click selects & applies
+  catsLeft.addEventListener("click", (e)=>{
+    const li = e.target.closest("li.root-item");
+    if (!li) return;
+    e.preventDefault();
+    const id = li.dataset.groupId || "";
+    const label = li.querySelector(".lbl")?.textContent || "Всички";
+    applyGroupSelection(id, label);
+    closeCatsPanel();
+  });
+}
+
+// Render vertical L2 list with L3 flyouts (your CSS handles hover)
+function renderRightColumns(rootId) {
+  if (!catsRight || !GROUP_TREE) return;
+  catsRight.innerHTML = "";
+
+  if (!rootId) {
+    catsRight.innerHTML = `<div class="muted" style="padding:10px;">Изберете категория</div>`;
+    return;
+  }
+  const root = GROUP_TREE.byId.get(Number(rootId));
+  if (!root) return;
+
+  const ul = document.createElement("ul");
+  ul.className = "l2-list";
+
+  for (const lvl2 of root.children) {
+    const li = document.createElement("li");
+    li.className = "l2-item";
+
+    const a2 = document.createElement("a");
+    a2.href = "#";
+    a2.className = "l2-link" + ((lvl2.children && lvl2.children.length) ? " has-children" : "");
+    a2.dataset.groupId = String(lvl2.id);
+    a2.textContent = lvl2.name;
+    li.appendChild(a2);
+
+    if (lvl2.children && lvl2.children.length) {
+      const fly = document.createElement("ul");
+      fly.className = "l3-fly";
+      for (const lvl3 of lvl2.children) {
+        const li3 = document.createElement("li");
+        li3.innerHTML = `<a href="#" data-group-id="${lvl3.id}">${escapeHtml(lvl3.name)}</a>`;
+        fly.appendChild(li3);
+      }
+      li.appendChild(fly);
+    }
+    ul.appendChild(li);
+  }
+
+  catsRight.appendChild(ul);
+
+  // Gentle delayed close tolerance for L3 (match Matching behavior)
+  const DELAY = 260;
+  ul.querySelectorAll('.l2-item').forEach(li => {
+    let t = null;
+    li.addEventListener('mouseenter', () => {
+      if (t) { clearTimeout(t); t = null; }
+      li.classList.add('open');
+    });
+    li.addEventListener('mouseleave', () => {
+      t = setTimeout(() => li.classList.remove('open'), DELAY);
+    });
+  });
+
+  // Click L2/L3 to apply
+  ul.addEventListener("click", (e)=>{
+    const a = e.target.closest("a[data-group-id]");
+    if (!a) return;
+    e.preventDefault();
+    applyGroupSelection(a.dataset.groupId || "", a.textContent || "");
+    closeCatsPanel();
+  });
+}
+
+function setActiveRoot(id) {
+  ACTIVE_ROOT_ID = id || "";
+  catsLeft?.querySelectorAll("li.root-item").forEach(li=>{
+    li.classList.toggle("active", (li.dataset.groupId || "") === ACTIVE_ROOT_ID);
+  });
+  if (ACTIVE_ROOT_ID) renderRightColumns(ACTIVE_ROOT_ID);
+  else catsRight.innerHTML = `<div class="muted" style="padding:10px;">Изберете категория</div>`;
+}
+
+function ensureSelectHasOption(selectEl, id, label) {
+  const idStr = String(id || "");
+  if (!selectEl) return;
+  let found = false;
+  for (const opt of selectEl.options) {
+    if (String(opt.value) === idStr) { found = true; break; }
+  }
+  if (!found && idStr) {
+    const o = document.createElement("option");
+    o.value = idStr;
+    o.textContent = label || idStr;
+    selectEl.appendChild(o);
+  }
+  selectEl.value = idStr;
+}
+
+function applyGroupSelection(id, _label) {
+  CURRENT_GROUP_ID = String(id || "");
+  if (groupFilter) ensureSelectHasOption(groupFilter, id, _label);
+  page = 1; loadCore(true);
+}
+
+// Open/close with slight delay (panel-level)
+const PANEL_DELAY = 380;
+let panelTimer = null;
+function openCatsPanel() {
+  if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }
+  catsTriggerWrap?.classList.add("open");
+  catsMega?.setAttribute("aria-hidden", "false");
+}
+function closeCatsPanel() {
+  if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }
+  catsTriggerWrap?.classList.remove("open");
+  catsMega?.setAttribute("aria-hidden", "true");
+}
+function scheduleClosePanel() {
+  if (panelTimer) clearTimeout(panelTimer);
+  panelTimer = setTimeout(() => closeCatsPanel(), PANEL_DELAY);
+}
+
+// Bootstrap the menu (fetch /api/groups once)
+(async function initMegaMenu() {
+  if (!catsMega) return;
+  try {
+    const r = await fetch(`${API}/api/groups`);
+    const groups = r.ok ? await r.json() : [];
+    GROUP_TREE = buildGroupTree(groups);
+    renderLeftRoots();
+    const firstRoot = GROUP_TREE.roots[0]?.id;
+    setActiveRoot(firstRoot ? String(firstRoot) : "");
+  } catch (e) {
+    console.warn("Groups load failed", e);
+  }
+
+  // Hover & click open; delayed close; outside click closes
+  catsTriggerWrap?.addEventListener("mouseenter", openCatsPanel);
+  catsTriggerWrap?.addEventListener("mouseleave", scheduleClosePanel);
+  catsTrigger?.addEventListener("click", (e)=>{
+    e.preventDefault();
+    if (catsTriggerWrap.classList.contains("open")) scheduleClosePanel(); else openCatsPanel();
+  });
+  catsMega?.addEventListener("mouseenter", ()=>{ if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }});
+  document.addEventListener("click", (e)=>{ if (!catsTriggerWrap.contains(e.target)) closeCatsPanel(); });
+})();
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Columns popover (unchanged)
    ──────────────────────────────────────────────────────────────────────────── */
 const COLS_KEY = "compare_cols_v1";
 const ALL_COLS = ["praktiker","mrbricolage","mashinibg"];
@@ -114,41 +362,34 @@ function saveCols(order) {
 }
 let colOrder = loadCols();
 
-// Pretty popover UI
-let colWrap = document.getElementById("colWrap"); // NEW
+let colWrap = document.getElementById("colWrap");
 let colBtn  = document.getElementById("colBtn");
 let colMenu = document.getElementById("colMenu");
 (function ensureColMenu(){
   if (!toolbar) return;
-  // Add a relative container so the popover positions nicely
   toolbar.style.position = toolbar.style.position || "relative";
-
-  // NEW: wrapper to anchor menu below the button
   if (!colWrap) {
     colWrap = document.createElement("div");
     colWrap.id = "colWrap";
     colWrap.className = "col-wrap";
     toolbar.appendChild(colWrap);
   }
-
   if (!colBtn) {
     colBtn = document.createElement("button");
     colBtn.id = "colBtn";
     colBtn.className = "col-btn";
     colBtn.type = "button";
     colBtn.innerHTML = `Columns ▾`;
-    colWrap.appendChild(colBtn); // was toolbar.appendChild
+    colWrap.appendChild(colBtn);
   } else {
-    // ensure inside wrapper
     colWrap.appendChild(colBtn);
   }
-
   if (!colMenu) {
     colMenu = document.createElement("div");
     colMenu.id = "colMenu";
     colMenu.className = "col-menu";
     colMenu.style.display = "none";
-    colWrap.appendChild(colMenu); // was toolbar.appendChild
+    colWrap.appendChild(colMenu);
   } else {
     colWrap.appendChild(colMenu);
   }
@@ -157,7 +398,6 @@ let colMenu = document.getElementById("colMenu");
 function renderColMenu(){
   if (!colMenu) return;
   const enabled = new Set(colOrder);
-  // Menu order: enabled (in saved order) first, then disabled alphabetically
   const keys = [...colOrder, ...ALL_COLS.filter(k => !enabled.has(k)).sort((a,b)=>COL_LABELS[a].localeCompare(COL_LABELS[b]))];
 
   const rows = keys.map(k => {
@@ -186,10 +426,9 @@ function renderColMenu(){
     </div>
   `;
 
-  // Wire events (keep popover open -> stopPropagation)
   colMenu.querySelectorAll(".col-row input[type=checkbox]").forEach(inp=>{
     inp.addEventListener("change", (e)=>{
-      e.stopPropagation(); // keep open
+      e.stopPropagation();
       const key = e.target.closest(".col-row").dataset.key;
       if (e.target.checked) {
         if (!colOrder.includes(key)) colOrder.push(key);
@@ -203,7 +442,7 @@ function renderColMenu(){
   });
   colMenu.querySelectorAll(".col-up").forEach(btn=>{
     btn.addEventListener("click", (e)=>{
-      e.stopPropagation(); // keep open
+      e.stopPropagation();
       const key = btn.closest(".col-row").dataset.key;
       const i = colOrder.indexOf(key);
       if (i > 0) {
@@ -217,7 +456,7 @@ function renderColMenu(){
   });
   colMenu.querySelectorAll(".col-dn").forEach(btn=>{
     btn.addEventListener("click", (e)=>{
-      e.stopPropagation(); // keep open
+      e.stopPropagation();
       const key = btn.closest(".col-row").dataset.key;
       const i = colOrder.indexOf(key);
       if (i >= 0 && i < colOrder.length-1) {
@@ -230,27 +469,25 @@ function renderColMenu(){
     });
   });
   colMenu.querySelector(".col-all")?.addEventListener("click", (e)=>{
-    e.stopPropagation(); // keep open
+    e.stopPropagation();
     colOrder = [...ALL_COLS];
     saveCols(colOrder);
     renderColMenu();
     page = 1; loadCore(false);
   });
   colMenu.querySelector(".col-reset")?.addEventListener("click", (e)=>{
-    e.stopPropagation(); // keep open
+    e.stopPropagation();
     colOrder = [...ALL_COLS];
     saveCols(colOrder);
     renderColMenu();
     page = 1; loadCore(false);
   });
 }
-// open/close popover
 colBtn?.addEventListener("click", (e)=>{
   e.stopPropagation();
   if (!colMenu) return;
   colMenu.style.display = (colMenu.style.display === "none") ? "block" : "none";
 });
-// close on outside click
 document.addEventListener("click", (e)=>{
   if (!colMenu || !colBtn) return;
   if (colMenu.style.display === "none") return;
@@ -277,24 +514,21 @@ let lastTag  = "";
     td.green{ background:rgba(22,163,74,.14) !important }
     td.red{ background:rgba(220,38,38,.12) !important }
 
-    /* Two-row grid ensures perfect alignment across all cells */
     .price-wrap{
       display:grid;
-      grid-template-rows: 14px 22px;   /* top: old, bottom: current+icons */
+      grid-template-rows: 14px 22px;
       align-items:center;
       justify-items:center;
       row-gap:2px;
-      min-height: 44px;                /* consistent cell height */
+      min-height: 44px;
       line-height:1.1;
       text-align:center;
       white-space:nowrap;
       font-variant-numeric: tabular-nums;
       font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", "Apple Color Emoji", "Segoe UI Emoji";
     }
-    /* Old price row (always occupies a row; may be hidden to keep height) */
     .price-old{ font-size:11px; color:#9aa3b2; text-decoration:line-through; }
-    .price-old.hidden{ visibility:hidden; } /* keeps row height without showing */
-    /* Current price line (price + arrow + badge) */
+    .price-old.hidden{ visibility:hidden; }
     .price-line{ display:inline-flex; align-items:center; gap:6px; }
     .price-new{ font-weight:800; font-size:15px; letter-spacing:.2px; }
     .price-link{ text-decoration:none; font-size:12px; line-height:1; }
@@ -305,8 +539,7 @@ let lastTag  = "";
       background:#fff1e2; color:#8d4a12;
     }
 
-    /* --- Columns popover --- */
-    .col-wrap{ position:relative; display:inline-block; } /* NEW */
+    .col-wrap{ position:relative; display:inline-block; }
     .col-btn{
       display:inline-flex; align-items:center; gap:.25rem;
       padding:6px 10px; border-radius:10px; border:1px solid var(--border);
@@ -316,7 +549,7 @@ let lastTag  = "";
     .col-btn:hover{ background:#f9fafb; }
     .col-menu{
       position:absolute;
-      top: calc(100% + 8px); /* sit right under the button */
+      top: calc(100% + 8px);
       left: 0;
       background:#fff; border:1px solid var(--border); border-radius:12px;
       box-shadow: 0 12px 24px rgba(0,0,0,.15);
@@ -399,7 +632,6 @@ const toNum = (v) => {
   const n = Number(s.replace(/\s+/g, "").replace(",", "."));
   return Number.isFinite(n) ? n : null;
 };
-// NO currency suffix in UI cells
 function fmtPlain(n) {
   const v = toNum(n);
   if (v === null) return "N/A";
@@ -447,7 +679,6 @@ function priceCellHTML(promo, regular, url=null, labelText=null) {
   const newStr  = fmtPlain(eff);
   const link = url ? `<a class="price-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">↗</a>` : "";
   const badge = labelText ? `<span class="price-badge" title="${escapeHtml(labelText)}">${escapeHtml(abbrLabel(labelText))}</span>` : "";
-  // Always render an "old" line; hide it when not used to keep row height the same
   const oldEl = `<span class="price-old${showOld ? "" : " hidden"}">${oldStr || "&nbsp;"}</span>`;
   return `
     <div class="price-wrap">
@@ -486,6 +717,60 @@ function brandMatches(rowBrandRaw, filterRaw) {
   return rowNorm.includes(filtNorm);
 }
 
+// ---- Categories (client-side fallback) ----
+// Build a set of descendant ids for a selected group id using the GROUP_TREE we already built.
+function getDescendantIds(rootId) {
+  const out = new Set();
+  if (!GROUP_TREE || !rootId) return out;
+  const start = GROUP_TREE.byId.get(Number(rootId));
+  if (!start) return out;
+  (function walk(n){
+    out.add(Number(n.id));
+    (n.children || []).forEach(walk);
+  })(start);
+  return out;
+}
+
+// Try to read group ids from a row regardless of schema shape.
+function extractRowGroupIds(row) {
+  // Common shapes we’ve seen across your project
+  if (Array.isArray(row.group_ids))               return row.group_ids.map(Number);
+  if (Array.isArray(row.product_group_ids))       return row.product_group_ids.map(Number);
+  if (Array.isArray(row.groups))                  return row.groups.map(g => Number(g?.id ?? g));
+  if (Array.isArray(row.product_groups))          return row.product_groups.map(g => Number(g?.id ?? g));
+  if (row.group_id != null)                       return [Number(row.group_id)];
+  if (row.product_group_id != null)               return [Number(row.product_group_id)];
+  // Nothing useful
+  return [];
+}
+
+// Apply a category filter to flat compare rows (single-site) OR to pivot rows (all-sites)
+function filterByGroup(rows, selectedGroupId, isPivot=false) {
+  if (!selectedGroupId) return rows;
+  const want = getDescendantIds(selectedGroupId);
+  if (want.size === 0) return rows;
+
+  if (!isPivot) {
+    // rows from /api/compare (flat)
+    return rows.filter(r => {
+      const ids = extractRowGroupIds(r);
+      if (!ids.length) return false;
+      return ids.some(id => want.has(Number(id)));
+    });
+  }
+
+  // pivot objects don’t carry groups → best effort: keep only items that existed in the
+  // original lastRows with a matching SKU and a matching group.
+  const goodSkus = new Set(
+    lastRows.filter(r => {
+      const ids = extractRowGroupIds(r);
+      return ids.length && ids.some(id => want.has(Number(id)));
+    }).map(r => r.product_sku)
+  );
+  return rows.filter(p => goodSkus.has(p.code));
+}
+
+
 // ---------------- Data fetch ----------------
 async function fetchBrands() {
   try {
@@ -511,8 +796,8 @@ async function fetchAssetsForSkus(skus) {
   return r.json();
 }
 
-// IMPORTANT: follow Matching’s query param names: q, tag_id, brand
-async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null, brand=null, q=null }) {
+// IMPORTANT: follow Matching’s query param names; now includes group_id
+async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null, brand=null, q=null, group_id=null }) {
   const params = new URLSearchParams();
   params.set("site_code", site_code);
   params.set("limit", String(limit));
@@ -520,6 +805,7 @@ async function fetchCompare({ site_code, limit, source="snapshots", tag_id=null,
   if (tag_id && tag_id !== "all" && tag_id !== "") params.set("tag_id", tag_id);
   if (brand && brand.trim()) params.set("brand", brand);
   if (q && q.trim()) params.set("q", q.trim());
+  if (group_id && String(group_id).trim() !== "") params.set("group_id", String(group_id).trim());
   const r = await fetch(`${API}/api/compare?${params.toString()}`);
   if (!r.ok) throw new Error(`compare HTTP ${r.status}`);
   return r.json();
@@ -631,7 +917,6 @@ function renderSingle(rows, site, assetsBySku) {
     const clsOur  = classForEffective(ourEff,   [ourEff, theirEff]);
     const clsComp = classForEffective(theirEff, [ourEff, theirEff]);
 
-    // show label for Praktiker and Mashini (any code containing "mashin")
     const competitorLabel = (isPrak || isMash || isBric) ? getRowLabel(r) : null;
 
     return `
@@ -663,15 +948,12 @@ function renderAllPage(pivotPage, assetsBySku) {
     });
   }
 
-  // ----- Dynamic headers (Praktis fixed + selected competitor columns in order)
-  const activeCols = colOrder.slice(); // already filtered by selection
+  const activeCols = colOrder.slice();
 
-  // NEW: Hide rows that don't exist in any of the selected competitor stores
   if (activeCols.length > 0) {
     pivotPage = pivotPage.filter(p => {
       for (const key of activeCols) {
         const meta = COL_META[key];
-        // Consider row present if either promo or regular has a numeric price
         const hasPrice =
           toNum(p[meta.promo]) !== null || toNum(p[meta.regular]) !== null;
         if (hasPrice) return true;
@@ -689,7 +971,6 @@ function renderAllPage(pivotPage, assetsBySku) {
   const html = pivotPage.map(p => {
     const effP   = effective(p.praktis_promo, p.praktis_regular);
 
-    // Build competitor entries in selected order
     const compEntries = activeCols.map(key => {
       const meta = COL_META[key];
       return {
@@ -702,7 +983,6 @@ function renderAllPage(pivotPage, assetsBySku) {
       };
     });
 
-    // Highlight scope: only consider Praktis + INCLUDED competitor columns
     const compEff = compEntries.map(e => e.eff).filter(v => v !== null);
     const allEff  = [effP, ...compEff];
     const clsP    = compEff.length ? classForEffective(effP, allEff) : "";
@@ -735,12 +1015,17 @@ function renderAllPage(pivotPage, assetsBySku) {
 async function loadCore(refetch=true) {
   const site_code = siteSelect?.value || "all";
   const limit     = Number(compareLimit?.value || 50);
+  const selectedGroupId = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
 
   if (refetch || site_code !== lastSite || (tagFilter?.value ?? "") !== lastTag) {
     const tagVal = tagFilter?.value ?? "";
     const q      = (searchInput?.value || "").trim();
     const brand  = currentBrandFilter();
-    lastRows = await fetchCompare({ site_code, limit, source: "snapshots", tag_id: tagVal, brand, q }) || [];
+    lastRows = await fetchCompare({
+      site_code, limit, source: "snapshots",
+      tag_id: tagVal, brand, q,
+      group_id: selectedGroupId || null
+    }) || [];
     lastSite = site_code; lastTag = tagVal; page = 1;
   }
 
@@ -751,6 +1036,13 @@ async function loadCore(refetch=true) {
 
   if (site_code === "all") {
     let pivot = pivotAll(lastRows);
+
+      // Fallback category filter (works even if backend doesn’t filter)
+      const selGroup = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
+      if (selGroup) {
+        pivot = filterByGroup(pivot, selGroup, /* isPivot */ true);
+      }
+
 
     if (selectedTag) {
       pivot = pivot.filter(p => {
@@ -782,6 +1074,12 @@ async function loadCore(refetch=true) {
     if (pageInfo) pageInfo.textContent = `Page ${page} / ${Math.max(1, Math.ceil(total / PER_PAGE))} (rows: ${slice.length} of ${total})`;
   } else {
     let rows = lastRows.slice();
+
+      // Fallback category filter for flat rows
+      const selGroup = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "");
+      if (selGroup) {
+        rows = filterByGroup(rows, selGroup, /* isPivot */ false);
+      }
 
     if (selectedTag) {
       rows = rows.filter(r => {
@@ -875,49 +1173,118 @@ async function init() {
   prevPageBtn?.addEventListener("click",   () => { page = Math.max(1, page - 1); loadCore(false); });
   nextPageBtn?.addEventListener("click",   () => { page = page + 1; loadCore(false); });
 
-  // Export current view (unchanged)
-  function exportViaBackend() {
-    const site_code = siteSelect?.value || "all";
-    const tag_id    = (tagFilter?.value || "").trim();
+// ------- EXACT EXPORT OF CURRENT "ALL SITES" VIEW (filters + columns) -------
+function exportViaBackend() {
+  const site_code = siteSelect?.value || "all";
 
-    const q   = (document.getElementById("searchInput")?.value || "").trim();
-    const bt  = (document.getElementById("brandInput")?.value || "").trim();
-    const bs  = (document.getElementById("brandSelect")?.value || "").trim();
-    const brand = bs || bt;
+  // ---- collect active filters
+  const q = (document.getElementById("searchInput")?.value || "").trim();
+  const tag_id = (document.getElementById("tagFilter")?.value || "").trim();
 
-    const price = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
-    const price_status = price === "better" ? "ours_lower" : "ours_higher";
+  const bt = (document.getElementById("brandInput")?.value || "").trim();
+  const bs = (document.getElementById("brandSelect")?.value || "").trim();
+  const brand = bs || bt;
 
-    const per_page = 50;
-    const params = new URLSearchParams();
-    params.set("site_code", site_code);
-    params.set("limit", "2000");
-    params.set("source", "snapshots");
-    if (tag_id) params.set("tag_id", tag_id);
-    if (q) params.set("q", q);
-    if (brand) params.set("brand", brand);
-    if (price_status) params.set("price_status", price_status);
-    if (typeof page !== "undefined") params.set("page", String(page));
-    params.set("per_page", String(per_page));
+  const priceRaw = (document.getElementById("priceStatus")?.value || "").trim(); // "" | better | worse
+  let price_status = "";
+  if (priceRaw === "better") price_status = "ours_lower";
+  else if (priceRaw === "worse") price_status = "ours_higher";
 
-    // --- Praktis presence dropdown (All / On site / Not on site)
-    let praktisPresence = document.getElementById("praktisPresence");
-    if (!praktisPresence) {
-      praktisPresence = document.createElement("select");
-      praktisPresence.id = "praktisPresence";
-      praktisPresence.innerHTML = `
-        <option value="">All products</option>
-        <option value="present">Products on Praktis website</option>
-        <option value="missing">Products NOT on Praktis website</option>
-      `;
-      toolbar?.appendChild(praktisPresence);
-    }
-    praktisPresence.addEventListener("change", () => { page = 1; loadCore(false); });
+  const category_id =
+    (document.getElementById("categoryFilter")?.value ||
+     document.getElementById("categorySelect")?.value || "").trim();
 
-    window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
+  const praktis_presence = (document.getElementById("praktisPresence")?.value || "").trim(); // "" | present | missing
+
+  // ---- derive visible competitor columns
+  // Base praktis columns are always first
+  const baseCols = ["praktis_code", "image", "praktis_name", "praktis_price"];
+  let competitorTokens = [];
+
+  // 1) Preferred: read actual visible header cells
+  const table = document.getElementById("compareTable");
+  const thead = table?.querySelector("thead");
+  if (site_code === "all" && thead) {
+    const ths = thead.querySelectorAll("th");
+    ths.forEach(th => {
+      // visible?
+      const cs = window.getComputedStyle(th);
+      const visible = cs.display !== "none" && th.offsetWidth > 0 && th.offsetHeight > 0;
+      if (!visible) return;
+
+      // use data-site if present, else try mapping by header text
+      let key = (th.getAttribute("data-site") || "").trim().toLowerCase();
+      if (!key) {
+        const txt = (th.textContent || "").trim().toLowerCase();
+        if (txt.includes("praktiker")) key = "praktiker";
+        else if (txt.includes("bricol")) key = "mrbricolage";
+        else if (txt.includes("mashin")) key = "mashinibg";
+      }
+      if (key && (key === "praktiker" || key === "mrbricolage" || key === "mashinibg")) {
+        competitorTokens.push(`${key}_price`);
+      }
+    });
   }
-  (document.getElementById("exportExcel") || document.querySelector("[data-export], .export"))
-    ?.addEventListener("click", exportViaBackend);
+
+  // 2) Fallback: read Columns popover checkboxes
+  if (site_code === "all" && competitorTokens.length === 0) {
+    const colMenu = document.getElementById("columnsMenu") || document.getElementById("columnsPopup");
+    if (colMenu) {
+      colMenu.querySelectorAll('input[type="checkbox"][data-col]').forEach(cb => {
+        if (cb.checked) {
+          const k = (cb.getAttribute("data-col") || "").trim().toLowerCase();
+          if (k) competitorTokens.push(`${k}_price`);
+        }
+      });
+    }
+  }
+
+  // 3) Last resort: window.colOrder
+  if (site_code === "all" && competitorTokens.length === 0 && Array.isArray(window.colOrder)) {
+    competitorTokens = window.colOrder.map(k => `${String(k).toLowerCase()}_price`);
+  }
+
+  const columns = site_code === "all" ? baseCols.concat(competitorTokens) : null;
+
+  // ---- pagination (export exactly current page/size)
+  const per_page =
+    Number(document.getElementById("pageSize")?.value) ||
+    (typeof window.perPage !== "undefined" ? Number(window.perPage) : 50);
+  // page should already exist in scope in your file; guard anyway:
+  const currentPage = (typeof window.page !== "undefined") ? Number(window.page) : 1;
+
+  // ---- build params
+  const params = new URLSearchParams();
+  params.set("site_code", site_code);
+  params.set("limit", "2000");
+  params.set("source", "snapshots");
+
+  if (q)                 params.set("q", q);
+  if (tag_id)            params.set("tag_id", tag_id);
+  if (brand)             params.set("brand", brand);
+  if (price_status)      params.set("price_status", price_status);
+  if (category_id)       params.set("category_id", category_id);
+  if (praktis_presence)  params.set("praktis_presence", praktis_presence);
+
+  params.set("page", String(currentPage));
+  params.set("per_page", String(per_page));
+
+  if (columns && columns.length) {
+    params.set("columns", columns.join(","));
+  }
+
+  window.location = `${API}/api/export/compare.xlsx?${params.toString()}`;
+}
+
+// Clean re-bind
+{
+  const btn = document.getElementById("exportExcel") || document.querySelector("[data-export], .export");
+  if (btn) {
+    const clone = btn.cloneNode(true);
+    btn.parentNode.replaceChild(clone, btn);
+    clone.addEventListener("click", exportViaBackend);
+  }
+}
 
   // First render
   await loadCore(true);

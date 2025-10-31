@@ -11,8 +11,8 @@
   <h1>Matching</h1>
   <nav>
     <a class="card" href="./comparison.html">Comparison</a>
-    <a class="card" href="./tags.html">Tags</a> <!-- NEW -->
-    <a class="card" href="./email.html">Email</a> <!-- NEW -->
+    <a class="card" href="./tags.html">Tags</a>
+    <a class="card" href="./email.html">Email</a>
     <a class="card" href="./erp.html">ERP Import</a>
     <span style="flex:1"></span>
     <select id="siteSelect"></select>
@@ -22,13 +22,25 @@
 
 <main>
   <div class="toolbar">
+    <!-- Mega-menu Categories (hover/click) -->
+    <div class="cats-trigger-wrap" id="catsWrap">
+      <button id="catsTrigger" class="cats-trigger">Категории ▾</button>
+      <span id="groupSelectedLabel" class="group-selected">Всички</span>
+      <button id="groupClear" class="btn-clear" title="Изчисти">×</button>
+
+      <div id="catsPanel" class="cats-mega" aria-hidden="true">
+        <aside id="catsLeft" class="cats-left"></aside>
+        <section id="catsRight" class="cats-right"></section>
+      </div>
+    </div>
+
     <input id="searchInput" placeholder="Search SKU/Name/Barcode..."/>
 
-    <!-- NEW: Brand filters -->
+    <!-- Brand filters (existing) -->
     <input id="brandInput" placeholder="Brand…" />
     <select id="brandSelect"></select>
 
-    <!-- NEW: match toggles -->
+    <!-- Match toggles (existing) -->
     <button id="showMatched">Matched</button>
     <button id="showUnmatched">Unmatched</button>
     <button id="showAll">All</button>
@@ -45,11 +57,11 @@
     <tr>
       <th>Our SKU</th>
       <th>Barcode</th>
-      <th>Image</th> <!-- NEW -->
+      <th>Image</th>
       <th>Name</th>
       <th>Competitor SKU</th>
       <th>Competitor Barcode</th>
-      <th>Tags</th> <!-- NEW -->
+      <th>Tags</th>
       <th>Save</th>
     </tr>
     </thead>

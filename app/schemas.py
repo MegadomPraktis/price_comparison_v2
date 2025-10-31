@@ -147,3 +147,36 @@ class AnalyticsHistoryOut(BaseModel):
     product_name: Optional[str] = None
     product_barcode: Optional[str] = None
     series: List[AnalyticsSeriesOut]
+
+# --- NEW: Groups -------------------------------------------------------------
+class GroupOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    parent_id: Optional[int] = None
+
+# --- EXISTING: ProductIn / ProductOut (add groupid) -------------------------
+class ProductIn(BaseModel):
+    sku: str
+    barcode: Optional[str] = None
+    name: str
+    price_regular: Optional[float] = None
+    price_promo: Optional[float] = None
+    item_number: Optional[str] = None
+    brand: Optional[str] = None
+    # NEW
+    groupid: Optional[int] = None
+
+class ProductOut(BaseModel):
+    id: int
+    sku: str
+    barcode: Optional[str] = None
+    name: str
+    price_regular: Optional[float] = None
+    price_promo: Optional[float] = None
+    item_number: Optional[str] = None
+    brand: Optional[str] = None
+    # NEW
+    groupid: Optional[int] = None
+    class Config:
+        from_attributes = True
