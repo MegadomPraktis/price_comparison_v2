@@ -1,199 +1,95 @@
 # -*- coding: utf-8 -*-
-from typing import List, Literal, Optional
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
-from sqlalchemy import select
+from __future__ import annotations
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
 
-from app.db import get_session
-from app.services.comparison import (
-    build_rows_from_snapshots,
-    scrape_and_snapshot,
-)
-from app.registry import registry
-from app.models import CompetitorSite
+from app.db import get_db
+from app.services import comparison as svc
 
 router = APIRouter()
 
-
-class ScrapeResult(BaseModel):
-    written: int
-
-
-@router.get("/compare")  # keep open dicts so extra fields (brand/tags/groups) survive
-async def api_compare(
-    site_code: str = Query("all", description="competitor code or 'all'"),
-    limit: int = Query(200, ge=1, le=2000),
-    source: Literal["snapshots", "live"] = Query("snapshots"),
-    q: Optional[str] = Query(None, description="Search SKU/Barcode/Name"),
-    tag_id: Optional[str] = Query(None),  # accept as str; cast later for safety
-    brand: Optional[str] = Query(None, description="Case-insensitive; dots/spaces ignored"),
-    price_filter: Optional[Literal["ours_lower", "ours_higher"]] = Query(
-        None,
-        description="Server-side price filter; ignores N/A competitor prices.",
-    ),
-    # NEW: category/group filter (supports both names like Matching)
-    group_id: Optional[str] = Query(
-        None, description="Group/category id (descendants included)"
-    ),
-    category_id: Optional[str] = Query(
-        None, description="Alias of group_id for compatibility"
-    ),
+# ----------------------- Core data for comparison -----------------------
+@router.get("/compare")
+def get_compare_rows(
+    site_code: str = Query(..., description="Site code or 'all'"),
+    limit: int = Query(2000, ge=1, le=10000),
+    source: str = Query("snapshots"),
+    q: str | None = Query(None),
+    tag_id: str | None = Query(None),
+    brand: str | None = Query(None),
+    category_id: int | None = Query(None, description="ERP group/category id (root or leaf)"),
+    db: Session = Depends(get_db),
 ):
     """
-    Comparison rows:
-      - 'snapshots' (default): read from DB
-      - 'live'     : scrape then read from DB
-      - 'all' site : union across all competitor sites
-      - Filters    : q, tag_id, brand, group_id (descendants included)
-      - Optional price_filter: ours_lower / ours_higher (N/A ignored)
+    Returns flat rows for the comparison table. UNMATCHED products are skipped.
     """
-    # Normalize tag_id to int if provided
-    tag_id_int: Optional[int] = None
-    if tag_id not in (None, "", "all"):
-        try:
-            tag_id_int = int(tag_id)
-        except ValueError:
-            tag_id_int = None  # ignore bad value
+    return svc.build_rows_from_snapshots(
+        session=db,
+        site_code=site_code,
+        limit=limit,
+        source=source,
+        q=q,
+        tag_id=tag_id,
+        brand=brand,
+        category_id=category_id,
+    )
 
-    # Normalize group/category to int if provided (category_id wins if set)
-    raw_group = category_id if (category_id not in (None, "", "all")) else group_id
-    group_id_int: Optional[int] = None
-    if raw_group not in (None, "", "all"):
-        try:
-            group_id_int = int(raw_group)
-        except ValueError:
-            group_id_int = None
-
-    # Scrape first if requested
-    if source == "live":
-        if site_code == "all":
-            with get_session() as session:
-                sites = list(session.execute(select(CompetitorSite)).scalars().all())
-            for s in sites:
-                try:
-                    scraper = registry.get(s.code)
-                except Exception:
-                    continue
-                with get_session() as session:
-                    await scrape_and_snapshot(session, scraper, limit=limit)
-        else:
-            scraper = registry.get(site_code)
-            with get_session() as session:
-                await scrape_and_snapshot(session, scraper, limit=limit)
-
-    # Build rows (pre-filtered by q/tag/brand/group). Only matched items are returned.
-    rows: List[dict] = []
-    if site_code == "all":
-        with get_session() as session:
-            sites = list(session.execute(select(CompetitorSite)).scalars().all())
-        for s in sites:
-            with get_session() as session:
-                rows.extend(
-                    build_rows_from_snapshots(
-                        session,
-                        site_code=s.code,
-                        limit=limit,
-                        q=q,
-                        tag_id=tag_id_int,
-                        brand=brand,
-                        group_id=group_id_int,   # ← pass through
-                    )
-                )
-        if price_filter:
-            rows = _apply_price_filter(rows, mode=price_filter, all_sites=True)
-    else:
-        with get_session() as session:
-            rows = build_rows_from_snapshots(
-                session,
-                site_code=site_code,
-                limit=limit,
-                q=q,
-                tag_id=tag_id_int,
-                brand=brand,
-                group_id=group_id_int,       # ← pass through
-            )
-        if price_filter:
-            rows = _apply_price_filter(rows, mode=price_filter, all_sites=False)
-
-    return rows
-
-
-def _apply_price_filter(rows: List[dict], mode: Literal["ours_lower", "ours_higher"], all_sites: bool) -> List[dict]:
-    """
-    - all_sites=True : group by product_sku; compare ours to MIN competitor price across sites
-    - all_sites=False: compare ours to that site's competitor price
-    Ignore rows where a comparable price is missing (N/A).
-    """
-    from collections import defaultdict
-
-    def eff(promo, regular):
-        return promo if promo is not None else regular
-
-    if not all_sites:
-        out = []
-        for r in rows:
-            ours = eff(r.get("product_price_promo"), r.get("product_price_regular"))
-            comp = eff(r.get("competitor_price_promo"), r.get("competitor_price_regular"))
-            if comp is None or ours is None:
-                continue
-            if mode == "ours_lower" and ours < comp:
-                out.append(r)
-            elif mode == "ours_higher" and ours > comp:
-                out.append(r)
-        return out
-
-    groups = defaultdict(list)
-    for r in rows:
-        groups[r.get("product_sku")].append(r)
-
-    out = []
-    for sku, grp in groups.items():
-        ours_val = None
-        for r in grp:
-            ours_val = eff(r.get("product_price_promo"), r.get("product_price_regular"))
-            if ours_val is not None:
-                break
-        if ours_val is None:
-            continue
-
-        comps = []
-        for r in grp:
-            comp_val = eff(r.get("competitor_price_promo"), r.get("competitor_price_regular"))
-            if comp_val is not None:
-                comps.append(comp_val)
-        if not comps:
-            continue
-
-        min_comp = min(comps)
-        if mode == "ours_lower" and ours_val < min_comp:
-            out.extend(grp)
-        elif mode == "ours_higher" and ours_val > min_comp:
-            out.extend(grp)
-    return out
-
-
-@router.post("/compare/scrape", response_model=ScrapeResult)
-async def api_compare_scrape_now(
-    site_code: str,
-    limit: int = Query(200, ge=1, le=2000),
+# ----------------------- NEW: filtered scrape (first page, <=50) -----------------------
+@router.post("/compare/scrape/filtered")
+async def scrape_filtered(
+    site_code: str = Query(..., description="Single site code to scrape"),
+    q: str | None = Query(None),
+    tag_id: str | None = Query(None),
+    brand: str | None = Query(None),
+    category_id: int | None = Query(None),
+    limit: int = Query(50, ge=1, le=50, description="Hard capped at 50"),
+    db: Session = Depends(get_db),
 ):
     """
-    Manual scrape trigger. Supports site_code='all'.
+    Scrape ONLY the currently visible first-page items for the selected site,
+    honoring the same filters as the UI. Maximum of 50.
     """
-    if site_code != "all":
-        scraper = registry.get(site_code)
-        with get_session() as session:
-            written = await scrape_and_snapshot(session, scraper, limit=limit)
-            return ScrapeResult(written=written)
+    return await svc.scrape_filtered(
+        session=db,
+        site_code=site_code,
+        q=q,
+        tag_id=tag_id,
+        brand=brand,
+        category_id=category_id,
+        limit=limit,
+    )
 
-    written_total = 0
-    with get_session() as session:
-        sites = list(session.execute(select(CompetitorSite)).scalars().all())
-    for s in sites:
-        try:
-            scraper = registry.get(s.code)
-        except Exception:
-            continue
-        with get_session() as session:
-            written_total += await scrape_and_snapshot(session, scraper, limit=limit)
-    return ScrapeResult(written=written_total)
+# ----------------------- NEW: nightly mass scrape (all sites) -----------------------
+@router.post("/compare/scrape/all")
+async def scrape_all_nightly(
+    db: Session = Depends(get_db),
+):
+    """
+    Nightly cronjob: scrape all matched products across all registered sites concurrently.
+    Returns counts for visibility; safe to call from a scheduler.
+    """
+    return await svc.scrape_all(session=db)
+
+# ----------------------- Price history for charts (preserved) -----------------------
+@router.get("/compare/history")
+def price_history(
+    product_sku: str = Query(...),
+    site_code: str | None = Query(None, description="Optional site to narrow charts"),
+    db: Session = Depends(get_db),
+):
+    prod, data = svc.get_history_for_product(db, site_code or "", product_sku)
+    if not prod:
+        return {"ok": False, "error": "Product not found"}
+    # serialize snapshots simply
+    out = {}
+    for code, snaps in data.items():
+        out[code] = [
+            {
+                "ts": s.ts.isoformat(),
+                "regular": s.regular_price,
+                "promo": s.promo_price,
+                "label": s.competitor_label,
+            }
+            for s in snaps
+        ]
+    return {"ok": True, "product": {"sku": prod.sku, "name": prod.name}, "series": out}

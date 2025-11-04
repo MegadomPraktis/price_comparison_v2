@@ -1269,12 +1269,33 @@ async function init() {
   (document.getElementById("praktisPresence"))?.addEventListener("change", () => { page = 1; loadCore(false); });
 
   const onLoadLatest = withSpinner(loadLatestBtn, "Loading…", async () => { await loadCore(true); toast("Loaded latest data from DB"); });
+
+  // ────────────── CHANGED: Scrape only current filtered page (max 50) ──────────────
   const onScrapeNow  = withSpinner(scrapeNowBtn,  "Scraping…", async () => {
-    const site_code = siteSelect.value || "all";
-    await fetch(`${API}/api/compare/scrape?site_code=${encodeURIComponent(site_code)}&limit=${encodeURIComponent(FETCH_LIMIT)}`, { method: "POST" });
+    const site = (siteSelect?.value || "").trim();
+    if (!site || site === "all") { toast("Pick a single store first", "error"); return; }
+
+    const q           = (searchInput?.value || "").trim();
+    const tag_id      = (tagFilter?.value || "").trim();
+    const brand       = (brandSelect?.value || brandInput?.value || "").trim();
+    const category_id = (groupFilter?.value?.trim?.() || CURRENT_GROUP_ID || "").trim();
+
+    const params = new URLSearchParams();
+    params.set("site_code", site);
+    if (q)           params.set("q", q);
+    if (tag_id)      params.set("tag_id", tag_id);
+    if (brand)       params.set("brand", brand);
+    if (category_id) params.set("category_id", category_id);
+    params.set("limit", "50"); // hard cap for the button scrape
+
+    const r = await fetch(`${API}/api/compare/scrape/filtered?${params.toString()}`, { method: "POST" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    let js = {};
+    try { js = await r.json(); } catch {}
+    toast(`Queued: ${js.attempted ?? 0}, new snapshots: ${js.written ?? 0}`);
     await loadCore(true);
-    toast("Scrape finished");
   });
+  // ────────────────────────────────────────────────────────────────────────────
 
   loadLatestBtn?.addEventListener("click", () => { page = 1; onLoadLatest(); });
   scrapeNowBtn?.addEventListener("click",  () => { page = 1; onScrapeNow(); });
