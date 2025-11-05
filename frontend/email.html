@@ -6,38 +6,53 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="styles.css">
   <style>
-    :root{ --cell-b: #1b2542; }
-    table{ border-collapse:collapse; }
-    th,td{ border:1px solid var(--border); padding:8px; vertical-align:middle; }
-    thead th{ background:#0f1b38; }
-    .toolbar{ display:flex; gap:8px; align-items:center; margin:10px 0; flex-wrap:wrap; }
-    .btn{ padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:#10172a; color:#fff; cursor:pointer; }
-    .btn-green{ background:#16a34a; }
-    .btn-red{ background:#dc2626; }
-    .btn-outline{ background:#0f1730; color:#cfd6e4; }
-    .muted{ color:#8aa0c6; font-size:12px; }
-
-    /* schedule */
-    .schedule-table{ max-width: 720px; table-layout:fixed; }
-    .schedule-table th, .schedule-table td{ text-align:center; width:calc(720px/7); }
-    .schedule-table input{
-      width:100%; box-sizing:border-box; padding:6px 8px; background:#0b1226; border:1px solid var(--border); color:#e6ebf5; border-radius:6px;
+    /* Modal look consistent with other tabs; no orange borders */
+    dialog {
+      border: none;
+      outline: none;
+      border-radius: 16px;
+      background: var(--card);
+      color: var(--text);
+      padding: 16px 18px;
+      box-shadow: 0 30px 80px rgba(0,0,0,.5);
     }
+    dialog::backdrop { background: rgba(0,0,0,.55); }
 
-    /* dialog */
-    dialog{ border:none; border-radius:12px; background:#0b1226; color:#e6ebf5; padding:16px 18px; }
-    dialog::backdrop{ background:rgba(0,0,0,.6); }
-    form label{ display:flex; flex-direction:column; gap:6px; font-size:14px; }
-    input, select, textarea{
-      background:#0b1226; border:1px solid var(--border); color:#e6ebf5; border-radius:6px; padding:6px 8px;
+    /* Compact, tidy grid */
+    #ruleForm { min-width: 820px; }
+    .rule-grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:12px;
+      align-items:flex-start;
     }
+    .rule-grid label{ display:flex; flex-direction:column; gap:6px; }
+    .rule-grid .full{ grid-column: 1 / -1; }
+
+    /* Dropdown helpers (inherit project palette) */
+    .dd{ position:relative; }
+    .dd-btn{
+      display:flex; align-items:center; justify-content:space-between; gap:8px;
+      width:100%; cursor:pointer;
+      background:var(--input); border:1px solid var(--border); border-radius:10px; padding:8px 10px;
+    }
+    .dd-panel{
+      position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:10000; display:none;
+      max-height:280px; overflow:auto; background:var(--card);
+      border:1px solid var(--border); border-radius:12px; box-shadow:0 16px 40px rgba(0,0,0,.35); padding:8px;
+    }
+    .dd.open .dd-panel{ display:block; }
+    .dd-search{ width:100%; margin-bottom:8px; }
+    .dd-list{ display:flex; flex-direction:column; gap:6px; }
+    .dd-row{ display:flex; align-items:center; gap:8px; padding:6px; border-radius:8px; }
+    .dd-row:hover{ background:rgba(255,255,255,.04); }
+    .dd-empty{ padding:8px; opacity:.7; text-align:center; font-size:12px; }
 
     .chips{ display:flex; flex-wrap:wrap; gap:6px; }
-    .chip{ padding:2px 8px; border:1px solid var(--border); border-radius:12px; background:#0e1831; font-size:12px; }
-    /* toasts */
-    #toast-wrap{ position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none }
-    .toast{ padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#0f1730;min-width:220px;text-align:center;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35) }
-    .toast.ok{ color:#22c55e } .toast.err{ color:#ef4444 }
+    .chip{ padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--border); background:var(--chip, var(--card)); }
+
+    /* Keep green buttons readable on hover (don’t invert to white text on white) */
+    .btn.btn-green:hover { color: #fff; filter: brightness(0.95); }
   </style>
 </head>
 <body>
@@ -52,12 +67,14 @@
   </header>
 
   <main class="container">
-    <!-- Schedule -->
     <section>
       <h4>Schedule</h4>
-      <table class="schedule-table">
+      <table class="table schedule-table">
         <thead>
-          <tr><th>Monday</th><th>Tuesday</th><th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th><th>Sunday</th></tr>
+          <tr>
+            <th>Monday</th><th>Tuesday</th><th>Wednesday</th>
+            <th>Thursday</th><th>Friday</th><th>Saturday</th><th>Sunday</th>
+          </tr>
         </thead>
         <tbody>
           <tr>
@@ -77,7 +94,6 @@
       </div>
     </section>
 
-    <!-- Rules -->
     <section style="margin-top:18px">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <h4 style="margin:0">Notification rules</h4>
@@ -95,12 +111,14 @@
             <th style="width:220px">Name</th>
             <th>Tags</th>
             <th>Promo only</th>
-            <th>Competitor group</th>
-            <th>Price subset</th>
+            <th>Changed 24h</th>
+            <th>Brand</th>
+            <th>Category</th>
+            <th>Store</th>
             <th>Subscribers</th>
             <th>Notes</th>
             <th>Created on</th>
-            <th style="width:180px">*</th>
+            <th style="width:220px">*</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -110,53 +128,85 @@
 
   <!-- Add/Edit dialog -->
   <dialog id="ruleDlg">
-    <form method="dialog" id="ruleForm" style="min-width:680px">
-      <h3 id="dlgTitle">Add rule</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <form method="dialog" id="ruleForm">
+      <h3 id="dlgTitle" style="margin-top:0;margin-bottom:10px">Add rule</h3>
+
+      <div class="rule-grid">
         <label>Name <input id="r_name" required></label>
         <label>Site / Group
-          <select id="r_site">
-            <option value="all">All competitors</option>
+          <select id="r_site"><option value="all">All competitors</option></select>
+        </label>
+
+        <!-- TAGS dropdown (custom) -->
+        <div class="dd" id="tagsDD">
+          <label style="gap:8px">
+            <span>Tags (multi)</span>
+            <button type="button" class="dd-btn" id="tagsBtn"><span id="tagsBtnText">— All tags —</span><span>▾</span></button>
+            <div class="dd-panel">
+              <input class="dd-search" id="tagsSearch" placeholder="Search tags…">
+              <div class="dd-list" id="tagsList"></div>
+              <div class="dd-empty" id="tagsEmpty" style="display:none">No tags</div>
+            </div>
+          </label>
+          <input type="hidden" id="r_tags">
+          <div class="chips" id="tagsChips" style="margin-top:6px"></div>
+        </div>
+
+        <!-- Brand dropdown -->
+        <label>Brand
+          <select id="r_brand"><option value="">— Any —</option></select>
+        </label>
+
+        <!-- Category full-path dropdown -->
+        <div class="dd" id="catDD">
+          <label style="gap:8px">
+            <span>Category</span>
+            <button type="button" class="dd-btn" id="catBtn"><span id="catBtnText">— All categories —</span><span>▾</span></button>
+            <div class="dd-panel">
+              <input class="dd-search" id="catSearch" placeholder="Search categories…">
+              <div class="dd-list" id="catList"></div>
+              <div class="dd-empty" id="catEmpty" style="display:none">No categories</div>
+            </div>
+          </label>
+          <input type="hidden" id="r_category">
+        </div>
+
+        <!-- Checkboxes -->
+        <label style="align-items:flex-start">
+          <span>Promo only</span>
+          <input type="checkbox" id="r_promo" style="margin-top:6px">
+        </label>
+
+        <label style="align-items:flex-start">
+          <span>Changed in last 24h</span>
+          <input type="checkbox" id="r_changed24" style="margin-top:6px">
+        </label>
+
+        <label>Price direction
+          <select id="r_direction">
+            <option value="any">Any</option>
+            <option value="better">Ours lower</option>
+            <option value="worse">Ours higher</option>
           </select>
         </label>
 
-        <label>Tags (multi)
-          <select id="r_tags" multiple size="6" style="height:120px"></select>
-        </label>
-        <label>Brand <input id="r_brand" placeholder="optional"></label>
-
-        <label>Price subset
-          <select id="r_subset">
-            <option value="all">All items</option>
-            <option value="ours_lower">Only ours lower</option>
-            <option value="ours_higher">Only ours higher</option>
-            <option value="changed">Only changed (coming soon)</option>
-          </select>
-        </label>
-        <label>Promo only
-          <select id="r_promo">
-            <option value="0">No</option>
-            <option value="1">Yes</option>
-          </select>
+        <label>Subscribers (comma separated)
+          <input id="r_emails" placeholder="a@b.com, c@d.com">
         </label>
 
-        <label style="grid-column:1/-1">Subscribers (comma separated)
-          <input id="r_subs" placeholder="a@b.com, c@d.com" required>
-        </label>
-
-        <label style="grid-column:1/-1">Notes
-          <textarea id="r_notes" rows="2"></textarea>
+        <label class="full">Notes
+          <textarea id="r_notes" placeholder=""></textarea>
         </label>
       </div>
 
-      <div class="toolbar" style="justify-content:flex-end;margin-top:10px">
-        <button class="btn btn-outline" id="dlgCancel" type="button">Cancel</button>
-        <button class="btn btn-green" id="dlgSave" value="default">Save</button>
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:16px">
+        <span class="muted">● Required: name</span>
+        <button type="button" class="btn" id="btnCancel">Cancel</button>
+        <button type="submit" class="btn btn-green" id="btnSaveRule">Save</button>
       </div>
     </form>
   </dialog>
 
-  <div id="toast-wrap"></div>
-  <script type="module" src="email.js"></script>
+  <script type="module" src="./email.js"></script>
 </body>
 </html>
