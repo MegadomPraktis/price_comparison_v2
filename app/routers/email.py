@@ -705,7 +705,22 @@ def send_all_now():
             results.append({"rule_id": r.id, "name": r.name, "error": str(e)})
     return {"ok": True, "results": results}
 
+
 # ============================== Simple scheduler =============================
+def _get_scheduler_tz():
+    # Use explicit TZ if provided; default to Europe/Sofia (project default)
+    import os, pytz
+    tz_name = os.getenv("EMAIL_TZ") or os.getenv("APP_TZ") or "Europe/Sofia"
+    try:
+        return pytz.timezone(tz_name)
+    except Exception:
+        return pytz.timezone("Europe/Sofia")
+
+def _now_local_naive():
+    tz = _get_scheduler_tz()
+    # Return a naive datetime in local wall time to match how we store next_run_at
+    return datetime.now(tz).replace(tzinfo=None)
+
 async def _compute_next_run(now: datetime, schedule: dict) -> Optional[datetime]:
     mapday = ["mon","tue","wed","thu","fri","sat","sun"]
     for delta in range(0, 8):
@@ -723,29 +738,9 @@ async def _compute_next_run(now: datetime, schedule: dict) -> Optional[datetime]
             return cand
     return None
 
+
 async def email_scheduler_loop():
-    while True:
-        try:
-            with get_session() as session:
-                row = session.execute(select(EmailWeeklySchedule)).scalars().first()
-                if not row:
-                    row = EmailWeeklySchedule()
-                    session.add(row)
-                    session.commit()
-                    session.refresh(row)
-                now = datetime.now()
-                if not row.next_run_at:
-                    row.next_run_at = await _compute_next_run(now, row.data or {})
-                    session.commit()
-                if row.next_run_at and now >= row.next_run_at:
-                    rules = list(session.execute(select(EmailRule)).scalars())
-                    for r in rules:
-                        try:
-                            _build_and_send(r)
-                        except Exception as e:
-                            print("scheduler rule error:", r.id, e)
-                    row.next_run_at = await _compute_next_run(now + timedelta(seconds=1), row.data or {})
-                    session.commit()
-        except Exception as e:
-            print("email scheduler loop exception:", e)
-        await asyncio.sleep(60)
+    # Delegates to the standalone scheduler to avoid blocking self-HTTP calls.
+    # This preserves existing endpoints and UI behavior while making the scheduler reliable.
+    from app.scheduler import run_email_scheduler
+    await run_email_scheduler()

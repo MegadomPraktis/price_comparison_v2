@@ -100,24 +100,49 @@ class PriceSubset(str, Enum):
     changed = "changed"
     ours_higher = "ours_higher"
 
+
+class PriceDirection(str, Enum):
+    any = "any"
+    better = "better"   # our price lower
+    worse = "worse"     # our price higher
+
+
 class EmailRuleIn(BaseModel):
     name: str
-    tag_ids: List[int] | None = None
-    brand: str | None = None
+
+    # filters
+    tag_ids: Optional[List[int]] = None
+    brand: Optional[str] = None
     site_code: str = "all"
+
+    # legacy server option (still stored)
     price_subset: PriceSubset = PriceSubset.all
-    only_promo: bool = False
+
+    # UI sends 'promo_only'; DB column is 'only_promo'
+    only_promo: bool = Field(False, alias="promo_only")
+
+    # NEW: category + direction + changed24
+    category_id: Optional[int] = None
+    price_direction: PriceDirection = PriceDirection.any
+    changed_24h: bool = False
+
+    # recipients / notes
     subscribers: str = Field(..., description="Comma-separated emails")
-    notes: str | None = None
+    notes: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
 
 class EmailRuleOut(EmailRuleIn):
     id: int
-    created_by: str | None = None
+    created_by: Optional[str] = None
     created_on: datetime
-    modified_by: str | None = None
+    modified_by: Optional[str] = None
     modified_on: datetime
-    class Config:
-        orm_mode = True
+    # For convenience: API may enrich with category_path for display
+    category_path: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class WeeklySchedule(BaseModel):
     mon: str | None = "10:00"

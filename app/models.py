@@ -3,18 +3,13 @@ from datetime import datetime
 from sqlalchemy import (
     Integer, String, Float, DateTime, ForeignKey, UniqueConstraint, Text, Index, select, Table, Column, JSON
 )
-from sqlalchemy import JSON, Boolean, DateTime, Enum as SAEnum
-import enum
+from sqlalchemy import JSON as SA_JSON, Boolean, Enum as SAEnum
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from datetime import datetime
-from sqlalchemy import Boolean
 from app.db import Base
 import enum
+from typing import Optional
 
-from typing import List, Dict, Any, Optional
-
-# --- NEW: ProductTag association table (many-to-many)
-from sqlalchemy import MetaData
+# --- ProductTag association table (many-to-many)
 ProductTag = Table(
     "product_tags", Base.metadata,
     Column("product_id", Integer, ForeignKey("products.id", ondelete="CASCADE"), primary_key=True),
@@ -24,7 +19,7 @@ ProductTag = Table(
     UniqueConstraint("product_id", "tag_id", name="uq_product_tag")
 )
 
-# --- NEW: Categories (ERP groups) -------------------------------------------
+# --- Categories (ERP groups) -----------------------------------------------
 class Group(Base):
     """
     Categories tree from ERP. Minimal fields for filtering; you can extend later.
@@ -35,6 +30,7 @@ class Group(Base):
     parent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("groups.id"), nullable=True, index=True)
 
     parent = relationship("Group", remote_side=[id], backref="children", lazy="selectin")
+
 
 class Product(Base):
     __tablename__ = "products"
@@ -55,8 +51,9 @@ class Product(Base):
     )
     group = relationship("Group", lazy="joined")
 
-    # --- NEW: m2m to tags
+    # m2m to tags
     tags = relationship("Tag", secondary=ProductTag, back_populates="products", lazy="selectin")
+
 
 class CompetitorSite(Base):
     __tablename__ = "competitor_sites"
@@ -64,6 +61,7 @@ class CompetitorSite(Base):
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
     base_url: Mapped[str] = mapped_column(String(256))
+
 
 class Match(Base):
     __tablename__ = "matches"
@@ -84,6 +82,7 @@ class Match(Base):
         Index("ix_match_comp_barcode_site", "competitor_barcode", "site_id"),
     )
 
+
 class PriceSnapshot(Base):
     __tablename__ = "price_snapshots"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -98,13 +97,12 @@ class PriceSnapshot(Base):
     # NEW: Praktiker (and future) item label text
     competitor_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-# --- NEW: Tag model
+
 class Tag(Base):
     __tablename__ = "tags"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
 
-    # backref
     products = relationship("Product", secondary=ProductTag, back_populates="tags", lazy="selectin")
 
 # NEW: Praktis assets (URL + Image) stored separately from ERP products
@@ -124,20 +122,26 @@ class PriceSubset(str, enum.Enum):
     changed = "changed"     # price changed vs last snapshot (server calculates)
     ours_higher = "ours_higher"  # our price higher than competitor
 
+
 class EmailRule(Base):
     __tablename__ = "email_rules"
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
 
-    # Filters
-    tag_ids = Column(JSON, nullable=True)          # list[int]
+    # Filters (existing)
+    tag_ids = Column(SA_JSON, nullable=True)                 # list[int]
     brand = Column(String(255), nullable=True)
-    site_code = Column(String(64), nullable=False, default="all")  # "all" or a competitor code
-    price_subset = Column(SAEnum(PriceSubset), nullable=False, default=PriceSubset.all)
+    site_code = Column(String(64), nullable=False, default="all")
+    price_subset = Column(SAEnum(PriceSubset, native_enum=False), nullable=False, default=PriceSubset.all)
     only_promo = Column(Boolean, nullable=False, default=False)
 
+    # NEW filters used by Email tab
+    category_id = Column(Integer, ForeignKey("groups.id"), nullable=True, index=True)
+    price_direction = Column(String(16), nullable=False, default="any")  # any|better|worse
+    changed_24h = Column(Boolean, nullable=False, default=False)
+
     # Recipients & notes
-    subscribers = Column(Text, nullable=False)     # comma-separated emails
+    subscribers = Column(Text, nullable=False)               # comma-separated emails
     notes = Column(Text, nullable=True)
 
     # Audit
@@ -145,6 +149,7 @@ class EmailRule(Base):
     created_on = Column(DateTime, nullable=False, default=datetime.utcnow)
     modified_by = Column(String(255), nullable=True)
     modified_on = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class EmailWeeklySchedule(Base):
     """
@@ -156,8 +161,8 @@ class EmailWeeklySchedule(Base):
     data = Column(JSON, nullable=False, default={
         "mon": "10:00", "tue": "10:00", "wed": "10:00", "thu": "10:00", "fri": "10:00", "sat": None, "sun": None
     })
-    # next_run_at is optional; scheduler computes each minute
     next_run_at = Column(DateTime, nullable=True)
+
 
 def select_sites():
     return select(CompetitorSite)
