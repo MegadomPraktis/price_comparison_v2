@@ -12,8 +12,7 @@ from fastapi.responses import StreamingResponse
 from datetime import datetime
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side, Color
-from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.comments import Comment
 import openpyxl.packaging.manifest as _manifest
 
@@ -184,39 +183,6 @@ def _set_fill(ws, row_idx: int, col_idx: int, fill: PatternFill | None):
         ws.cell(row=row_idx, column=col_idx).fill = fill
 
 
-def _insert_img(ws, row_idx: int, col_idx: int, url: str, col_width_px: int = 110, row_height_pt: int = 60):
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        bio = io.BytesIO(resp.content)
-        img = XLImage(bio)
-
-        max_w_px, max_h_px = 96, 64
-        ratio = min(max_w_px / img.width, max_h_px / img.height, 1.0)
-        img.width = int(img.width * ratio)
-        img.height = int(img.height * ratio)
-
-        anchor_ref = f"{ws.cell(row=row_idx, column=col_idx).column_letter}{row_idx}"
-        img.anchor = anchor_ref
-
-        try:
-            EMU_PER_PX = 9525
-            cell_w_px = col_width_px
-            cell_h_px = int(row_height_pt * 4 / 3)
-            dx = max(0, (cell_w_px - img.width) // 2)
-            dy = max(0, (cell_h_px - img.height) // 2)
-            if hasattr(img, "anchor") and hasattr(img.anchor, "_from"):
-                img.anchor._from.colOff = dx * EMU_PER_PX
-                img.anchor._from.rowOff = dy * EMU_PER_PX
-        except Exception:
-            pass
-
-        ws.add_image(img)
-        ws.row_dimensions[row_idx].height = row_height_pt
-    except Exception:
-        pass
-
-
 def _fmt_money(v):
     if v is None:
         return None
@@ -231,7 +197,6 @@ def _fmt_money(v):
 # -----------------------------------------------------------------------------
 ALL_COLS: Dict[str, Tuple[str, int]] = {
     "praktis_code": ("Praktis Code", 110),
-    "image": ("Image", 110),
     "praktis_name": ("Praktis Name", 360),
     "praktis_price": ("Praktis Regular Price", 140),
     "praktiker_price": ("Praktiker Price", 170),
@@ -241,7 +206,6 @@ ALL_COLS: Dict[str, Tuple[str, int]] = {
 
 SITE_COLS: Dict[str, Tuple[str, int]] = {
     "praktis_code": ("Praktis Code", 110),
-    "image": ("Image", 110),
     "praktis_name": ("Praktis Name", 360),
     "competitor_code": ("Competitor Code", 160),
     "competitor_name": ("Competitor Name", 320),
@@ -260,12 +224,14 @@ def _parse_columns(raw: Optional[str], site_code: str) -> List[str]:
         toks = []
     allowed = ALL_COLS if site_code == "all" else SITE_COLS
     if toks:
+        # drop any stray "image" tokens from old frontends
+        toks = [t for t in toks if t != "image"]
         return [t for t in toks if t in allowed]
     if site_code == "all":
-        return ["praktis_code", "image", "praktis_name", "praktis_price",
+        return ["praktis_code", "praktis_name", "praktis_price",
                 "praktiker_price", "mrbricolage_price", "mashinibg_price"]
     else:
-        return ["praktis_code", "image", "praktis_name",
+        return ["praktis_code", "praktis_name",
                 "competitor_code", "competitor_name",
                 "praktis_regular", "competitor_regular",
                 "praktis_promo", "competitor_promo"]
@@ -290,9 +256,7 @@ def export_compare_xlsx(
     praktis_presence: Optional[str] = Query(None, pattern="^(present|missing)$"),
 ):
     """
-    XLSX export that mirrors the Comparison tab.
-    - Shows promo price in-cell (with badge) and keeps regular in a comment/strike-through (single-site).
-    - Respects all filters and pagination (page/per_page) to export exactly the current view.
+    XLSX export that mirrors the Comparison tab (without image column).
     """
     limit_for_compare = min(int(limit), 2000)
 
@@ -314,8 +278,8 @@ def export_compare_xlsx(
     headers = [allowed[t][0] for t in col_tokens]
     widths = [allowed[t][1] for t in col_tokens]
 
-    # assets
-    need_assets = any(t in col_tokens for t in ("praktis_code", "praktis_name", "image"))
+    # assets (only for hyperlinks to Praktis code/name; image is removed)
+    need_assets = any(t in col_tokens for t in ("praktis_code", "praktis_name"))
     skus = [r.get("product_sku") for r in rows if r.get("product_sku")]
     assets = _fetch_assets(list(dict.fromkeys(skus))) if need_assets else {}
 
@@ -360,7 +324,6 @@ def export_compare_xlsx(
             g = pivot[sku]
             a = assets.get(sku) or {}
             praktis_url = a.get("product_url") if need_assets else None
-            img_url = a.get("image_url") if need_assets else None
 
             row_vals: List[Any] = []
             price_col_map: Dict[str, int] = {}
@@ -368,8 +331,6 @@ def export_compare_xlsx(
             for idx0, tok in enumerate(col_tokens, start=1):
                 if tok == "praktis_code":
                     row_vals.append({"__HYPERLINK__": True, "text": sku, "url": praktis_url} if praktis_url else sku)
-                elif tok == "image":
-                    row_vals.append(None)
                 elif tok == "praktis_name":
                     name = g.get("product_name") or "Няма име"
                     row_vals.append({"__HYPERLINK__": True, "text": name, "url": praktis_url} if praktis_url else name)
@@ -402,7 +363,6 @@ def export_compare_xlsx(
                         row_vals.append(display_text if display_text is not None else None)
 
                     # Add comment with regular price or label details if useful
-                    # (we add after the row is placed)
                     price_col_map[tok] = idx0
                     number_cols.add(idx0)
                 else:
@@ -410,11 +370,6 @@ def export_compare_xlsx(
 
             _ws_row(ws, row_vals, number_cols)
             row_idx = ws.max_row
-
-            # Insert image
-            if "image" in col_tokens and img_url:
-                col_idx = col_tokens.index("image") + 1
-                _insert_img(ws, row_idx, col_idx, img_url, col_width_px=ALL_COLS["image"][1], row_height_pt=60)
 
             # Add comments for competitor prices where promo exists to show regular/label
             for tok in ("praktiker_price", "mrbricolage_price", "mashinibg_price"):
@@ -428,7 +383,6 @@ def export_compare_xlsx(
                         msg = f"Regular: {reg:.2f}"
                         if lbl: msg += f" | Label: {lbl}"
                         c.comment = Comment(msg, "export")
-                        # keep text right-aligned
                     except Exception:
                         pass
 
@@ -458,7 +412,6 @@ def export_compare_xlsx(
 
     else:
         # Single-site view
-        # (paginate BEFORE writing rows to keep header fixed)
         if page and per_page:
             start = max(0, (page - 1) * per_page)
             rows = rows[start: start + per_page]
@@ -467,7 +420,6 @@ def export_compare_xlsx(
             sku = r.get("product_sku") or ""
             a = assets.get(sku) or {}
             praktis_url = a.get("product_url") if need_assets else None
-            img_url = a.get("image_url") if need_assets else None
 
             comp_name = r.get("competitor_name") or "N/A"
             comp_url = r.get("competitor_url")
@@ -484,8 +436,6 @@ def export_compare_xlsx(
             for idx0, tok in enumerate(col_tokens, start=1):
                 if tok == "praktis_code":
                     row_vals.append({"__HYPERLINK__": True, "text": sku, "url": praktis_url} if praktis_url else sku)
-                elif tok == "image":
-                    row_vals.append(None)
                 elif tok == "praktis_name":
                     name = r.get("product_name") or "Няма име"
                     row_vals.append({"__HYPERLINK__": True, "text": name, "url": praktis_url} if praktis_url else name)
@@ -502,15 +452,12 @@ def export_compare_xlsx(
                     comp_reg_col = idx0
                     number_cols.add(idx0)
                 elif tok == "praktis_promo":
-                    # show promo plain; you can append a badge if you keep it as text
                     row_vals.append(_fmt_money(our_prm))
                     number_cols.add(idx0)
                 elif tok == "competitor_promo":
-                    # show [promo + badge] if promo exists
                     if comp_prm is not None:
                         badge = " П"
                         text = f"{comp_prm:.2f}{badge}" if comp_lbl else f"{comp_prm:.2f}"
-                        # keep it text to show badge; linking price cell is optional in single-site
                         row_vals.append(text)
                     else:
                         row_vals.append(_fmt_money(comp_prm))
@@ -523,10 +470,6 @@ def export_compare_xlsx(
 
             _ws_row(ws, row_vals, number_cols)
             row_idx = ws.max_row
-
-            if "image" in col_tokens and img_url:
-                col_idx = col_tokens.index("image") + 1
-                _insert_img(ws, row_idx, col_idx, img_url, col_width_px=SITE_COLS["image"][1], row_height_pt=60)
 
             # Strike-through the competitor regular price if there is a promo
             if comp_prm is not None and comp_reg is not None and comp_reg_col:
