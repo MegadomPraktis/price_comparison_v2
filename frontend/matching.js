@@ -832,3 +832,86 @@ refreshAssetsBtn && (refreshAssetsBtn.onclick = async () => {
 
 // Initial load
 await loadProducts();
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Toolbar layout (MATCHING TAB): reorder controls per requested design
+   Left (in order): Categories, Search, Brand input, Brand dropdown, Tags,
+                    Praktis presence, Match status
+   Right (right→left): Refresh Praktis assets, Auto-match, Load Products,
+                       Record count
+   ──────────────────────────────────────────────────────────────────────────── */
+(function ensureToolbarLayoutMatching(){
+  const tb = document.querySelector(".toolbar");
+  if (!tb) return;
+
+  // create wrappers once
+  let left = document.getElementById("tbLeft");
+  let right = document.getElementById("tbRight");
+  if (!left){
+    left = document.createElement("div");
+    left.id = "tbLeft";
+    left.style.display = "flex";
+    left.style.flexWrap = "wrap";
+    left.style.gap = "8px";
+  }
+  if (!right){
+    right = document.createElement("div");
+    right.id = "tbRight";
+    right.style.display = "flex";
+    right.style.flexWrap = "wrap";
+    right.style.gap = "8px";
+    right.style.marginLeft = "auto";
+  }
+
+  // If wrappers not in DOM, reset toolbar and append
+  if (!tb.contains(left) || !tb.contains(right)){
+    const frag = document.createDocumentFragment();
+    while (tb.firstChild) frag.appendChild(tb.firstChild);
+    tb.appendChild(left);
+    tb.appendChild(right);
+    tb.appendChild(frag);
+  }
+
+  // Helpers
+  const move = (el, parent) => { if (el && parent && el !== parent) parent.appendChild(el); };
+
+  // LEFT SIDE ELEMENTS (Matching tab IDs)
+  const catsWrap  = document.getElementById("catsTriggerWrap") || document.getElementById("catsWrap");
+  const search    = document.getElementById("searchInput");
+  const brandInp  = document.getElementById("brandInput");
+  const brandSel  = document.getElementById("brandSelect");
+  const tagsSel   = document.getElementById("tagFilter");
+  const praktisSel= document.getElementById("praktisPresence");
+  const matchSel  = document.getElementById("matchSelect");
+
+  // RIGHT SIDE ELEMENTS (Matching tab IDs)
+  const refreshBtn = document.getElementById("refreshPraktisAssets");
+  const autoBtn    = document.getElementById("autoMatch");
+  const loadBtn    = document.getElementById("loadProducts");
+  const recCnt     = document.getElementById("recordCount");
+
+  // If some elements are not created yet (because other scripts build them), retry shortly.
+  const needLater = [
+    catsWrap, search, brandInp, brandSel, tagsSel, praktisSel, matchSel,
+    refreshBtn, autoBtn, loadBtn, recCnt
+  ].some(x => !x);
+  if (needLater) return setTimeout(ensureToolbarLayoutMatching, 300);
+
+  // LEFT ORDER
+  move(catsWrap,  left);
+  move(search,    left);
+  move(brandInp,  left);
+  move(brandSel,  left);
+  move(tagsSel,   left);
+  move(praktisSel,left);
+  move(matchSel,  left);
+
+  // RIGHT ORDER (right→left visually; append in reverse so Refresh ends up rightmost)
+  move(recCnt,    right);  // leftmost in the right cluster
+  move(loadBtn,   right);
+  move(autoBtn,   right);
+  move(refreshBtn,right);  // rightmost
+
+  // Done — from now on, even if something re-renders, this function can run again and fix the order.
+})();

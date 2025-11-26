@@ -1,33 +1,22 @@
-# app/routers/erp.py
+# app/services/erp_import.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from typing import BinaryIO, Dict, List, Optional
 import io
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+import textwrap
 
 import requests
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from sqlalchemy import select
 from xml.etree import ElementTree as ET
 from openpyxl import load_workbook
+from sqlalchemy import select
 
 from app.db import get_session
 from app.models import Product
 
-# NOTE:
-# main.py mounts this router with:
-#   app.include_router(r_erp.router, prefix="/api", tags=["erp"])
-#
-# So a route defined as "/erp/import_excel" here becomes:
-#   /api/erp/import_excel
-
-router = APIRouter()
-
-# =============================================================================
-# Zeron connection config
-# =============================================================================
+# ---------------- Zeron config ----------------
 
 ZERON_URL = os.getenv(
     "ZERON_URL",
@@ -38,14 +27,12 @@ ZERON_USERCODE = os.getenv("ZERON_USERCODE", "1831")
 ZERON_USERPASS = os.getenv("ZERON_USERPASS", "angelbangel33")
 ZERON_STOREHOUSE = os.getenv("ZERON_STOREHOUSE", "1001")
 
+# how many SKUs per Zeron request
 ZERON_MAX_PER_REQUEST = int(os.getenv("ZERON_MAX_PER_REQUEST", "200"))
 ZERON_TIMEOUT = int(os.getenv("ZERON_TIMEOUT", "60"))
 ZERON_VERIFY_SSL = os.getenv("ZERON_SSL_VERIFY", "1").lower() in ("1", "true", "yes", "on")
 
-
-# =============================================================================
-# Helpers: Excel parsing (find SKU column by header name)
-# =============================================================================
+# ---------------- Excel helpers ----------------
 
 def _normalize_header(value: str) -> str:
     if value is None:
@@ -55,22 +42,19 @@ def _normalize_header(value: str) -> str:
         s = s.replace("  ", " ")
     return s
 
-
-# Names / fragments for the SKU column header
+# headers we treat as the SKU column (case-insensitive, space-insensitive)
 SKU_HEADER_KEYWORDS = (
     # Bulgarian variants
-    "код",              # "Код"
-    "ску",              # "Ску"
+    "код",          # "Код"
+    "ску",          # "Ску"
     "код на zeron",
     "код в zeron",
     "код zeron",
-    "ков зерон",        # typo: "Ков Зерон"
     # English variants
     "sku",
     "skus",
     "codes",
 )
-
 
 def _is_sku_header_cell(text: str) -> bool:
     if not text:
@@ -81,16 +65,16 @@ def _is_sku_header_cell(text: str) -> bool:
     if norm in ("код", "ску", "sku", "skus", "codes"):
         return True
 
+    # keyword based
     for kw in SKU_HEADER_KEYWORDS:
         if kw in norm:
             return True
     return False
 
-
 def _normalize_sku_cell(value) -> Optional[str]:
     if value is None:
         return None
-    # Numeric cells (e.g. 35566672 or 35566672.0)
+    # Numbers (e.g. 35566672 or 35566672.0)
     if isinstance(value, (int, float)):
         if isinstance(value, float) and value.is_integer():
             return str(int(value))
@@ -98,22 +82,21 @@ def _normalize_sku_cell(value) -> Optional[str]:
     s = str(value).strip()
     if not s:
         return None
-    # Excel-ish "35566672.0"
+    # Excelish "35566672.0"
     if s.endswith(".0") and s[:-2].isdigit():
         return s[:-2]
     return s
 
-
-def extract_skus_from_excel(data: bytes) -> List[str]:
+def extract_skus_from_excel(f: BinaryIO) -> List[str]:
     """
     Reads an Excel file and returns a list of SKUs based on header names.
 
     Recognised header names / patterns (case-insensitive):
       - Код, Ску
-      - Код на Zeron, Код в Zeron, Код Zeron, Ков Зерон
+      - Код на Zeron, Код в Zeron, Код Zeron
       - Sku, skus, codes
     """
-    f = io.BytesIO(data)
+    f.seek(0)
     wb = load_workbook(f, read_only=True, data_only=True)
     skus: List[str] = []
     seen: set[str] = set()
@@ -127,7 +110,7 @@ def extract_skus_from_excel(data: bytes) -> List[str]:
             for cell in row:
                 text = str(cell.value).strip() if cell.value is not None else ""
                 if _is_sku_header_cell(text):
-                    sku_col_idx = cell.column  # 1-based index
+                    sku_col_idx = cell.column  # 1-based
                     header_row_idx = cell.row
                     break
             if sku_col_idx is not None:
@@ -150,17 +133,15 @@ def extract_skus_from_excel(data: bytes) -> List[str]:
     if not skus:
         raise ValueError(
             "Не успях да намеря колона със SKU. Очаквам заглавие като "
-            '"Код", "Код в Zeron", "Код на Зерон", "Sku", "Skus", "Codes" и т.н.'
+            "\"Код\", \"Код в Zeron\", \"Sku\", \"Skus\", \"Codes\" и т.н."
         )
     return skus
 
-
-# =============================================================================
-# Helpers: Zeron XML generation + parsing
-# =============================================================================
+# ---------------- Zeron XML helpers ----------------
 
 def _build_zeron_payload(skus: List[str]) -> str:
-    rows = "".join(f"<Row><InvCode>{sku}</InvCode></Row>" for sku in skus)
+    rows = [f"<Row><InvCode>{sku}</InvCode></Row>" for sku in skus]
+    invlist_xml = "".join(rows)
     xml = f"""
 <Data>
   <Destination>
@@ -171,7 +152,7 @@ def _build_zeron_payload(skus: List[str]) -> str:
       <OperName>ESLGetInvPriceGroupsPrices</OperName>
       <Parameters>
         <InvList>
-          {rows}
+          {invlist_xml}
         </InvList>
         <StoreHouse>{ZERON_STOREHOUSE}</StoreHouse>
       </Parameters>
@@ -179,9 +160,8 @@ def _build_zeron_payload(skus: List[str]) -> str:
   </Destination>
 </Data>
 """.strip()
-    # compact payload
-    return xml.replace("\n", "").replace("  ", "")
-
+    # compact for smaller payload
+    return textwrap.dedent(xml).replace("\n", "").replace("  ", "")
 
 def _parse_zeron_response(xml_text: str) -> Dict[str, dict]:
     """
@@ -212,9 +192,9 @@ def _parse_zeron_response(xml_text: str) -> Dict[str, dict]:
 
         group_raw = get("GroupID")
         try:
-            groupid = int(group_raw) if group_raw else None
+            group_id = int(group_raw) if group_raw else None
         except Exception:
-            groupid = None
+            group_id = None
 
         result[inv_code] = {
             "sku": inv_code,
@@ -230,24 +210,23 @@ def _parse_zeron_response(xml_text: str) -> Dict[str, dict]:
             "in_brochure": get("InBroschure"),
             "on_stock": get("OnStock"),
             "blocked_delivery": get("BlockedDelivery"),
-            "groupid": groupid,
+            "groupid": group_id,
             "brand": get("Trademark"),
             "item_number": get("SuppItemCode"),
         }
     return result
 
-
 def fetch_zeron_for_skus(all_skus: List[str]) -> Dict[str, dict]:
     """
     Call Zeron in chunks and return merged result mapping sku -> info.
     """
-    skus = [s for s in all_skus if s]
+    all_skus = [s for s in all_skus if s]
     merged: Dict[str, dict] = {}
-    if not skus:
+    if not all_skus:
         return merged
 
-    for i in range(0, len(skus), ZERON_MAX_PER_REQUEST):
-        chunk = skus[i:i + ZERON_MAX_PER_REQUEST]
+    for i in range(0, len(all_skus), ZERON_MAX_PER_REQUEST):
+        chunk = all_skus[i:i + ZERON_MAX_PER_REQUEST]
         payload = _build_zeron_payload(chunk)
         r = requests.post(
             ZERON_URL,
@@ -261,10 +240,7 @@ def fetch_zeron_for_skus(all_skus: List[str]) -> Dict[str, dict]:
         merged.update(part)
     return merged
 
-
-# =============================================================================
-# Helpers: DB upsert
-# =============================================================================
+# ---------------- DB upsert helpers ----------------
 
 def upsert_products_from_erp(data: Dict[str, dict]) -> Dict[str, int]:
     """
@@ -320,77 +296,16 @@ def upsert_products_from_erp(data: Dict[str, dict]) -> Dict[str, int]:
 
     return {"created": created, "updated": updated}
 
+# ---------------- Orchestrators ----------------
 
-# =============================================================================
-# Endpoints
-# =============================================================================
-
-@router.post("/erp/ingest_xml")
-async def ingest_xml(xml_file: UploadFile = File(...)):
+def import_excel_and_update_products(f: BinaryIO) -> Dict[str, object]:
     """
-    OLD behaviour: upload XML (already exported from Zeron) and import products.
-    Kept so you don't lose previous functionality.
-
-    Frontend (current erp.html) sends field name: "xml_file"
-    to /api/erp/ingest_xml.
+    High-level helper used by the /erp/import_excel endpoint.
     """
-    try:
-        raw = await xml_file.read()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Не мога да прочета файла: {e}")
-
-    # try UTF-8, fallback to Windows-1251
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        text = raw.decode("cp1251", errors="ignore")
-
-    try:
-        data = _parse_zeron_response(text)
-        stats = upsert_products_from_erp(data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Грешен XML или неочакван формат: {e}")
-
-    return {
-        "ok": True,
-        "rows_in_xml": len(data),
-        "created": stats["created"],
-        "updated": stats["updated"],
-    }
-
-
-@router.post("/erp/import_excel")
-async def import_erp_excel(file: UploadFile = File(...)):
-    """
-    NEW behaviour: upload Excel with SKUs; call Zeron and upsert into products.
-
-    Excel може да има допълнителни колони – търсим колоната с име:
-      „Код“, „Код в Zeron“, „Код на Зерон“, „Sku“, „Skus“, „Codes“, „Ков Зерон“ и т.н.
-
-    Final path (with main.py prefix) is:
-      POST /api/erp/import_excel
-    """
-    fname = (file.filename or "").lower()
-    if not fname.endswith((".xlsx", ".xls")):
-        raise HTTPException(status_code=400, detail="Моля, качете Excel файл (.xlsx или .xls).")
-
-    content = await file.read()
-
-    try:
-        skus = extract_skus_from_excel(content)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Грешка при четене на Excel: {e}")
-
-    try:
-        erp_data = fetch_zeron_for_skus(skus)
-        stats = upsert_products_from_erp(erp_data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Грешка при заявка към Zeron: {e}")
-
+    skus = extract_skus_from_excel(f)
+    erp_data = fetch_zeron_for_skus(skus)
+    stats = upsert_products_from_erp(erp_data)
     missing = sorted(set(skus) - set(erp_data.keys()))
-
     return {
         "ok": True,
         "skus_in_file": len(skus),
@@ -401,40 +316,23 @@ async def import_erp_excel(file: UploadFile = File(...)):
         "missing_in_erp": missing,
     }
 
-
-@router.post("/erp/refresh_all")
-async def erp_refresh_all_products():
+def refresh_all_products_once() -> Dict[str, object]:
     """
-    Endpoint intended to be called by external cronjob (no async loop inside app).
-
-    Fetches ALL product.sku from DB, calls Zeron, and updates them.
-
-    Final path (with main.py prefix) is:
-      POST /api/erp/refresh_all
+    Used by daily cronjob: refresh all existing products from ERP.
     """
     with get_session() as session:
         rows = session.execute(select(Product.sku)).all()
-        all_skus = [r[0] for r in rows if r[0]]
+        skus = [r[0] for r in rows if r[0]]
 
-    all_skus = sorted(set(all_skus))
-    if not all_skus:
-        return {
-            "ok": True,
-            "total_skus": 0,
-            "skus_with_data": 0,
-            "created": 0,
-            "updated": 0,
-        }
+    skus = sorted(set(skus))
+    if not skus:
+        return {"ok": True, "total_skus": 0, "skus_with_data": 0, "created": 0, "updated": 0}
 
-    try:
-        erp_data = fetch_zeron_for_skus(all_skus)
-        stats = upsert_products_from_erp(erp_data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Грешка при заявка към Zeron: {e}")
-
+    erp_data = fetch_zeron_for_skus(skus)
+    stats = upsert_products_from_erp(erp_data)
     return {
         "ok": True,
-        "total_skus": len(all_skus),
+        "total_skus": len(skus),
         "skus_with_data": len(erp_data),
         "created": stats["created"],
         "updated": stats["updated"],
