@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import io
 import os
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
 import requests
+import xmltodict
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from sqlalchemy import select
-from xml.etree import ElementTree as ET
 from openpyxl import load_workbook
 
 from app.db import get_session
@@ -24,6 +25,7 @@ from app.models import Product
 #   /api/erp/import_excel
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Zeron connection config
@@ -156,7 +158,39 @@ def extract_skus_from_excel(data: bytes) -> List[str]:
 
 
 # =============================================================================
-# Helpers: Zeron XML generation + parsing
+# Common helper (taken from your code – ONLY used for price logic)
+# =============================================================================
+
+class Common:
+    @staticmethod
+    def process_string(s):
+        return (str(s).strip() if s is not None else "")
+
+    @staticmethod
+    def calculate_discounted_price(price: float, discount: float) -> float:
+        return price * (100.0 - discount) / 100.0
+
+    @classmethod
+    def process_entry(cls, entry, all_entries):
+        if 'Discount' in entry:
+            entry['DiscountedPrice'] = cls.calculate_discounted_price(float(entry['Price']), float(entry['Discount']))
+        else:
+            # Find the maximum price for the same InvCode to determine the base price
+            inv_code = entry['InvCode']
+            base_price = max(float(e['Price']) for e in all_entries if e['InvCode'] == inv_code)
+
+            discounted_price = float(entry['Price'])  # The current price is the discounted price
+
+            if base_price > discounted_price:
+                discount_percentage = round(((base_price - discounted_price) / base_price) * 100)
+                entry['Discount'] = discount_percentage  # Store discount percentage
+
+            entry['DiscountedPrice'] = discounted_price  # Store the actual discounted price
+            entry['Price'] = str(base_price)  # Ensure that the base price is stored correctly
+
+
+# =============================================================================
+# Helpers: Zeron XML generation + parsing + YOUR selection logic
 # =============================================================================
 
 def _build_zeron_payload(skus: List[str]) -> str:
@@ -185,32 +219,111 @@ def _build_zeron_payload(skus: List[str]) -> str:
 
 def _parse_zeron_response(xml_text: str) -> Dict[str, dict]:
     """
-    Parse Zeron XML into a dict keyed by InvCode (sku).
+    Parse Zeron XML into a dict keyed by InvCode (sku), but the selection
+    of which row to use per SKU uses EXACTLY your if/else logic.
     """
+    # Your code uses xmltodict, so we'll do the same
+    new_data = xmltodict.parse(xml_text)
+
+    selected_tables = []
+    inv_codes: Dict[str, List[dict]] = {}
+
+    # ---- YOUR LOGIC START (copied as-is, only "url / headers / data" part omitted) ----
+    # Check if 'Table' key exists in response
+    if new_data['Response']['Destination']['Operation']['DataSet'] is not None:
+        logger.info("Successfully received Zeron data.")
+
+        tables = new_data['Response']['Destination']['Operation']['DataSet']['Table']
+        if not isinstance(tables, list):
+            tables = [tables]
+
+        # Group entries by InvCode
+        for table in tables:
+            entry = dict(table)
+            entry["Storehouse"] = ZERON_STOREHOUSE
+            inv_code = entry.get('InvCode')
+            entry['CurrencyCode'] = Common.process_string(entry['CurrencyCode'])
+
+            if inv_code:
+                # Separating the repeating inv_codes
+                if inv_code not in inv_codes:
+                    inv_codes[inv_code] = []
+                inv_codes[inv_code].append(entry)
+    else:
+        logger.error("Zeron data response has empty DataSet.")
+
+    # Process each group of entries with the same InvCode
+    for inv_code, entries in inv_codes.items():
+        allow_better_prices_0_entries = [entry for entry in entries if entry['AllowBetterPrices'] == '0']
+
+        if allow_better_prices_0_entries:
+            for entry in allow_better_prices_0_entries:
+                Common.process_entry(entry, entries)
+            # If we have entries with AllowBetterPrices 0, select the one with the lowest PriceGroupCode
+            allow_better_prices_0_entries.sort(key=lambda x: int(x['PriceGroupCode']))
+            selected_tables.append(allow_better_prices_0_entries[0])
+        else:
+            allow_better_prices_2_entries = [entry for entry in entries if entry['AllowBetterPrices'] == '2']
+
+            if allow_better_prices_2_entries:
+                # If we have entries with AllowBetterPrices 2, filter by PriceGroupType 10 and 20, choose the lowest price
+                allow_better_prices_2_filtered = [
+                    entry for entry in entries if entry['PriceGroupType'] in ['10', '20']
+                ]
+                if allow_better_prices_2_filtered:
+                    for entry in allow_better_prices_2_filtered:
+                        Common.process_entry(entry, entries)
+                    allow_better_prices_2_filtered.sort(key=lambda x: float(x['DiscountedPrice']))
+                    selected_tables.append(allow_better_prices_2_filtered[0])
+            else:
+                allow_better_prices_3_entries = [entry for entry in entries if entry['AllowBetterPrices'] == '3']
+
+                if allow_better_prices_3_entries:
+                    # If we have entries with AllowBetterPrices 3, filter by PriceGroupType 20 and 30, choose the lowest price
+                    allow_better_prices_3_filtered = [
+                        entry for entry in entries if entry['PriceGroupType'] in ['20', '30']
+                    ]
+                    if allow_better_prices_3_filtered:
+                        for entry in allow_better_prices_3_filtered:
+                            Common.process_entry(entry, entries)
+                        allow_better_prices_3_filtered.sort(key=lambda x: float(x['DiscountedPrice']))
+                        selected_tables.append(allow_better_prices_3_filtered[0])
+                else:
+                    allow_better_prices_1_entries = [entry for entry in entries if entry['AllowBetterPrices'] == '1']
+
+                if allow_better_prices_1_entries:
+                    # Only calculate discounts for PriceGroupType != '10'
+                    for entry in allow_better_prices_1_entries:
+                        if entry['PriceGroupType'] != '10':
+                            Common.process_entry(entry, entries)
+                        else:
+                            # keep the price as-is and zero out any discount
+                            entry['DiscountedPrice'] = float(entry['Price'])
+                            entry['Discount'] = 0
+
+                    # now pick the one with the lowest discounted price
+                    allow_better_prices_1_entries.sort(
+                        key=lambda x: float(x['DiscountedPrice'])
+                    )
+                    selected_tables.append(allow_better_prices_1_entries[0])
+    # ---- YOUR LOGIC END ----
+
+    # Now we have selected_tables: one chosen row per InvCode.
+    # Convert to the dict format used by upsert_products_from_erp()
     result: Dict[str, dict] = {}
-    root = ET.fromstring(xml_text)
 
-    success_text = (root.findtext(".//Success") or "").strip().lower()
-    if success_text not in ("true", "1", "yes"):
-        msg = (root.findtext(".//ErrorMessage") or "").strip()
-        raise RuntimeError(f"Zeron returned error: {msg or 'Unknown error'}")
-
-    for table_el in root.findall(".//Table"):
-        def get(tag: str) -> Optional[str]:
-            el = table_el.find(tag)
-            return el.text.strip() if el is not None and el.text is not None else None
-
-        inv_code = get("InvCode")
+    for entry in selected_tables:
+        inv_code = entry.get("InvCode")
         if not inv_code:
             continue
 
-        price_raw = get("Price")
+        price_raw = entry.get("Price")
         try:
-            price = float(price_raw.replace(",", ".")) if price_raw else None
+            price = float(str(price_raw).replace(",", ".")) if price_raw else None
         except Exception:
             price = None
 
-        group_raw = get("GroupID")
+        group_raw = entry.get("GroupID")
         try:
             groupid = int(group_raw) if group_raw else None
         except Exception:
@@ -218,28 +331,30 @@ def _parse_zeron_response(xml_text: str) -> Dict[str, dict]:
 
         result[inv_code] = {
             "sku": inv_code,
-            "barcode": get("Barcode"),
-            "name": get("InvName"),
-            "measure": get("Measure"),
-            "price_group_type": get("PriceGroupType"),
-            "price_group_code": get("PriceGroupCode"),
+            "barcode": entry.get("Barcode"),
+            "name": entry.get("InvName"),
+            "measure": entry.get("Measure"),
+            "price_group_type": entry.get("PriceGroupType"),
+            "price_group_code": entry.get("PriceGroupCode"),
             "price": price,
-            "currency_code": get("CurrencyCode"),
-            "from_date": get("FromDate"),
-            "allow_better_prices": get("AllowBetterPrices"),
-            "in_brochure": get("InBroschure"),
-            "on_stock": get("OnStock"),
-            "blocked_delivery": get("BlockedDelivery"),
+            "currency_code": entry.get("CurrencyCode"),
+            "from_date": entry.get("FromDate"),
+            "allow_better_prices": entry.get("AllowBetterPrices"),
+            "in_brochure": entry.get("InBroschure"),
+            "on_stock": entry.get("OnStock"),
+            "blocked_delivery": entry.get("BlockedDelivery"),
             "groupid": groupid,
-            "brand": get("Trademark"),
-            "item_number": get("SuppItemCode"),
+            "brand": entry.get("Trademark"),
+            "item_number": entry.get("SuppItemCode"),
         }
+
     return result
 
 
 def fetch_zeron_for_skus(all_skus: List[str]) -> Dict[str, dict]:
     """
-    Call Zeron in chunks and return merged result mapping sku -> info.
+    Call Zeron in chunks and return merged result mapping sku -> info,
+    after applying your selection logic.
     """
     skus = [s for s in all_skus if s]
     merged: Dict[str, dict] = {}
@@ -305,7 +420,7 @@ def upsert_products_from_erp(data: Dict[str, dict]) -> Dict[str, int]:
             if info.get("name") is not None:
                 p.name = info["name"] or p.name
 
-            # price_regular from ERP
+            # price_regular from ERP (selected row)
             if "price" in info:
                 p.price_regular = info["price"]
 
