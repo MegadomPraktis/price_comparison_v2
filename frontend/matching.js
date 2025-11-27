@@ -474,6 +474,21 @@ async function fetchAssetsForSkus(skus) {
   return r.json();
 }
 
+function getCurrentPageSkus() {
+  const skus = [];
+  if (!tbodyMatch) return skus;
+
+  const rows = tbodyMatch.querySelectorAll("tr");
+  for (const tr of rows) {
+    // first <td> in each row is "Our SKU" (p.sku from the products table)
+    const firstCell = tr.querySelector("td");
+    if (!firstCell) continue;
+    const sku = (firstCell.textContent || "").trim();
+    if (sku) skus.push(sku);
+  }
+  return skus;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    Search: live + Enter
    ──────────────────────────────────────────────────────────────────────────── */
@@ -808,7 +823,18 @@ autoMatchBtn && (autoMatchBtn.onclick = async () => {
   await loadProducts();
 });
 refreshAssetsBtn && (refreshAssetsBtn.onclick = async () => {
-  const payload = { limit: 500 };
+  // Take SKUs from the *currently visible* rows (after all filters)
+  const allSkus = getCurrentPageSkus();
+  // Safety cap – do not send more than PAGE_SIZE items
+  const skus = allSkus.slice(0, PAGE_SIZE);
+
+  if (!skus.length) {
+    alert("Няма заредени продукти на екрана за обновяване.");
+    return;
+  }
+
+  const payload = { skus };
+
   refreshAssetsBtn.disabled = true;
   const original = refreshAssetsBtn.textContent;
   refreshAssetsBtn.textContent = "Refreshing…";
