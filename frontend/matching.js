@@ -489,6 +489,20 @@ function getCurrentPageSkus() {
   return skus;
 }
 
+function getCurrentPageProductIds() {
+  const ids = [];
+  if (!tbodyMatch) return ids;
+
+  const rows = tbodyMatch.querySelectorAll("tr");
+  for (const tr of rows) {
+    const idVal = tr.dataset.productId;
+    if (!idVal) continue;
+    const n = Number(idVal);
+    if (Number.isFinite(n) && n > 0) ids.push(n);
+  }
+  return ids;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    Search: live + Enter
    ──────────────────────────────────────────────────────────────────────────── */
@@ -676,6 +690,7 @@ async function renderMatchRows(products, matchesByProductId, tagsByProductId, as
     const praktisImg = asset?.image_url || null;
 
     const tr = document.createElement("tr");
+    tr.dataset.productId = String(p.id);
     tr.innerHTML = `
       <td>${p.sku}</td>
       <td>${p.barcode ?? ""}</td>
@@ -811,48 +826,44 @@ prevPageBtn && (prevPageBtn.onclick = () => { page = Math.max(1, page - 1); wind
 nextPageBtn && (nextPageBtn.onclick = () => { page = page + 1; window.scrollTo({top:0,behavior:"smooth"}); loadProducts(); });
 tagFilter && (tagFilter.onchange = () => { page = 1; loadProducts(); });
 autoMatchBtn && (autoMatchBtn.onclick = async () => {
-  const code = siteSelect?.value || "";
-  const r = await fetch(`${API}/api/matches/auto?site_code=${encodeURIComponent(code)}&limit=100}`, { method: "POST" });
-  if (!r.ok) {
-    const err = await r.text();
-    alert("Auto-match failed:\n" + err);
-    return;
-  }
-  const data = await r.json();
-  alert(`Auto match -> attempted=${data.attempted}, found=${data.found}`);
-  await loadProducts();
-});
-refreshAssetsBtn && (refreshAssetsBtn.onclick = async () => {
-  // Take SKUs from the *currently visible* rows (after all filters)
-  const allSkus = getCurrentPageSkus();
-  // Safety cap – do not send more than PAGE_SIZE items
-  const skus = allSkus.slice(0, PAGE_SIZE);
-
-  if (!skus.length) {
-    alert("Няма заредени продукти на екрана за обновяване.");
+  const siteCode = siteSelect?.value || "";
+  if (!siteCode) {
+    alert("Please choose a competitor site first.");
     return;
   }
 
-  const payload = { skus };
+  // Take product IDs from the *currently visible* rows (after all filters)
+  const allIds = getCurrentPageProductIds();
+  const productIds = allIds.slice(0, PAGE_SIZE); // safety cap, should already be ≤ 50
 
-  refreshAssetsBtn.disabled = true;
-  const original = refreshAssetsBtn.textContent;
-  refreshAssetsBtn.textContent = "Refreshing…";
+  if (!productIds.length) {
+    alert("Няма продукти на екрана за автоматично съвпадение.");
+    return;
+  }
+
+  autoMatchBtn.disabled = true;
+  const original = autoMatchBtn.textContent;
+  autoMatchBtn.textContent = "Auto-matching…";
+
   try {
-    const r = await fetch(`${API}/api/praktis/assets/sync`, {
+    const payload = { site_code: siteCode, product_ids: productIds };
+    const r = await fetch(`${API}/api/matches/auto_page`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!r.ok) throw new Error(await r.text());
-    const info = await r.json();
-    alert(`Praktis assets refreshed:\nchecked=${info.checked}, updated=${info.updated}, skipped=${info.skipped}, errors=${info.errors}`);
+    if (!r.ok) {
+      const err = await r.text();
+      throw new Error(err);
+    }
+    const data = await r.json();
+    alert(`Auto match (this page) -> attempted=${data.attempted}, found=${data.found}`);
     await loadProducts();
   } catch (e) {
-    alert("Refresh failed:\n" + (e?.message || e));
+    alert("Auto-match failed:\n" + (e?.message || e));
   } finally {
-    refreshAssetsBtn.textContent = original;
-    refreshAssetsBtn.disabled = false;
+    autoMatchBtn.textContent = original;
+    autoMatchBtn.disabled = false;
   }
 });
 

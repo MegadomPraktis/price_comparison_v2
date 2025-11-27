@@ -227,6 +227,129 @@ async def auto_match_for_site(session, scraper: BaseScraper, limit: Optional[int
     print(f"[AUTO] Finished: site={scraper.site_code} attempted={attempted} found={found} elapsed={total:.1f}s")
     return attempted, found
 
+
+async def auto_match_for_products(session, scraper: BaseScraper, product_ids: List[int]) -> Tuple[int, int]:
+    """
+    Auto-match only for the given list of product IDs (used by Matching tab for current page).
+    Behaviour is the same as auto_match_for_site but restricted to this subset and skipping
+    products that already have a match for this site.
+    """
+    if not product_ids:
+        return 0, 0
+
+    site = get_site(session, scraper.site_code)
+
+    # Deduplicate while preserving order
+    seen: Set[int] = set()
+    unique_ids: List[int] = []
+    for pid in product_ids:
+        if pid not in seen:
+            seen.add(pid)
+            unique_ids.append(pid)
+
+    # Filter out products that already have a match for this site
+    existing = session.execute(
+        select(Match.product_id).where(
+            Match.site_id == site.id,
+            Match.product_id.in_(unique_ids)
+        )
+    ).scalars().all()
+    existing_ids = set(existing)
+    target_ids = [pid for pid in unique_ids if pid not in existing_ids]
+    if not target_ids:
+        return 0, 0
+
+    products = session.execute(
+        select(Product).where(Product.id.in_(target_ids))
+    ).scalars().all()
+    if not products:
+        return 0, 0
+
+    PAR = 12
+    attempted = 0
+    found = 0
+    cache: Dict[tuple, Optional[SearchResult]] = {}
+    t0 = time.perf_counter()
+    print(f"[AUTO_PAGE] Start: site={scraper.site_code} count={len(products)}")
+
+    async def resolve(prod: Product) -> Optional[SearchResult]:
+        async def by_item_number():
+            item_no = (prod.item_number or "").strip() or None
+            brand   = (prod.brand or "").strip() or None
+            if not item_no:
+                return None
+            key = (scraper.site_code, "item_number", item_no.lower(), (brand or "").lower())
+            if key in cache:
+                return cache[key]
+            try:
+                r = await scraper.search_by_item_number(item_no, brand=brand)
+            except Exception:
+                r = None
+            cache[key] = r
+            return r
+
+        async def by_barcode():
+            code = (prod.barcode or "").strip() or None
+            if not code:
+                return None
+            key = (scraper.site_code, "barcode", code)
+            if key in cache:
+                return cache[key]
+            try:
+                r = await scraper.search_by_barcode(code)
+            except Exception:
+                r = None
+            cache[key] = r
+            return r
+
+        if scraper.site_code == "mashinibg":
+            return (await by_item_number()) or (await by_barcode())
+        else:
+            return await by_barcode()
+
+    sem = asyncio.Semaphore(PAR)
+
+    async def pooled(p: Product):
+        async with sem:
+            return p, await resolve(p)
+
+    results = await asyncio.gather(*(pooled(p) for p in products))
+
+    for p, sres in results:
+        attempted += 1
+        if not sres:
+            continue
+
+        comp_sku = (sres.competitor_sku or "").strip() or None
+        comp_bar = (sres.competitor_barcode or "").strip() or None
+
+        if scraper.site_code == "mashinibg":
+            if not comp_sku:
+                comp_sku = (p.item_number or "").strip() or None
+            if not comp_bar:
+                comp_bar = (p.barcode or "").strip() or None
+        else:
+            if not comp_bar:
+                comp_bar = (p.barcode or "").strip() or None
+
+        if comp_sku or comp_bar:
+            session.add(Match(
+                product_id=p.id,
+                site_id=site.id,
+                competitor_sku=comp_sku,
+                competitor_barcode=comp_bar,
+            ))
+            found += 1
+
+    session.commit()
+    elapsed = time.perf_counter() - t0
+    print(
+        f"[AUTO_PAGE] Finished: site={scraper.site_code} "
+        f"attempted={attempted} found={found} elapsed={elapsed:.1f}s"
+    )
+    return attempted, found
+
+
 # NEW: bulk lookup with latest snapshot URL/Name (prefers SKU snapshot, else barcode)
 def get_matches_for_product_ids(session, site_code: str, product_ids: List[int]) -> List[MatchOut]:
     if not product_ids:
