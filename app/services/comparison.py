@@ -356,17 +356,15 @@ async def scrape_and_snapshot(session, scraper, limit: int = 200) -> int:
 
                     latest = s2.execute(_latest_snapshot_stmt(site.id, key_sku, key_bar)).scalars().first()
 
+                    # Compare fields; write only if something changed
                     changed = False
                     if latest is None:
                         changed = True
                     else:
-                        if (getattr(detail, "name", None) or None) != (latest.name or None):
+                        # Only track changes in prices or label; ignore name / URL changes
+                        if not _eq_price(detail.regular_price, latest.regular_price):
                             changed = True
-                        elif not _eq_price(getattr(detail, "regular_price", None), latest.regular_price):
-                            changed = True
-                        elif not _eq_price(getattr(detail, "promo_price", None), latest.promo_price):
-                            changed = True
-                        elif (getattr(detail, "url", None) or None) != (latest.url or None):
+                        elif not _eq_price(detail.promo_price, latest.promo_price):
                             changed = True
                         elif (getattr(detail, "label", None) or None) != (latest.competitor_label or None):
                             changed = True

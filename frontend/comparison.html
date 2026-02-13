@@ -4,8 +4,12 @@
   <meta charset="utf-8"/>
   <title>Comparison</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <link rel="icon" type="image/png" href="./images/favicon.png">
-  <link rel="stylesheet" href="./styles.css"/>
+
+  <!-- Favicon from /app (mounted frontend) -->
+  <link rel="icon" type="image/png" href="/app/images/favicon.png">
+
+  <!-- ✅ Correct stylesheet path (file name is styles.css, served at /app) -->
+  <link rel="stylesheet" href="/app/styles.css?v=2025-11-13b">
 </head>
 <body>
 <header>
@@ -61,7 +65,8 @@
   </div>
 </div>
 
-<script type="module" src="./comparison.js"></script>
-<script type="module" src="./analytics.js"></script>
+<!-- ✅ Correct script paths served at /app -->
+<script type="module" src="/app/comparison.js?v=2025-11-11b"></script>
+<script type="module" src="/app/analytics.js?v=2025-11-11b"></script>
 </body>
 </html>

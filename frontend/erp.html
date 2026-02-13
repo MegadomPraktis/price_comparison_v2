@@ -6,6 +6,67 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="icon" type="image/png" href="./images/favicon.png">
   <link rel="stylesheet" href="./styles.css"/>
+  <style>
+    .erp-page {
+      padding: 24px 32px 40px;
+    }
+    @media (max-width: 768px) {
+      .erp-page {
+        padding: 16px;
+      }
+    }
+    .erp-card {
+      max-width: 640px;
+      margin-top: 24px;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .erp-card h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+    .erp-card p {
+      margin: 0;
+      font-size: 14px;
+      opacity: .85;
+    }
+    .erp-form-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .erp-form-row input[type="file"] {
+      flex: 1 1 auto;
+      max-width: 360px;
+    }
+    .erp-message {
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-line;
+    }
+    .erp-message.ok {
+      color: #0b8f3b;
+    }
+    .erp-message.err {
+      color: #c62828;
+    }
+    .erp-meta {
+      font-size: 13px;
+      opacity: .85;
+      margin-top: 4px;
+    }
+    .erp-missing-list {
+      margin-top: 6px;
+      font-size: 13px;
+    }
+    .erp-missing-list code {
+      font-family: monospace;
+      font-size: 12px;
+    }
+  </style>
 </head>
 <body>
 <header>
@@ -18,16 +79,26 @@
   </nav>
 </header>
 
-<main>
-  <h3>Качи Excel със SKU от ERP</h3>
-  <form id="erpForm">
-    <input type="file" id="erpFile" accept=".xlsx,.xls"/>
-    <button type="submit">Импорт</button>
-  </form>
-  <pre id="erpResult"></pre>
+<main class="erp-page">
+  <section class="card erp-card">
+    <div>
+      <h2>Качи Excel със SKU от ERP</h2>
+      <p>
+        Избери Excel файл, в който има колона за кодове (Код / Код в Zeron / SKU и т.н.).
+        Системата ще прочете SKU-тата, ще направи заявка към Zeron и ще обнови таблицата с продукти.
+      </p>
+    </div>
+
+    <form id="erpForm" class="erp-form-row">
+      <input type="file" id="erpFile" accept=".xlsx,.xls"/>
+      <button type="submit">Импорт</button>
+    </form>
+
+    <div id="erpMessage" class="erp-message"></div>
+    <div id="erpMeta" class="erp-meta"></div>
+  </section>
 </main>
 
-<!-- moved JS into a separate module file -->
 <script type="module" src="./erp.js"></script>
 </body>
 </html>

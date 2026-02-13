@@ -15,7 +15,7 @@ from sqlalchemy import select
 from openpyxl import load_workbook
 
 from app.db import get_session
-from app.models import Product
+from app.models import Product, Group
 
 # NOTE:
 # main.py mounts this router with:
@@ -35,7 +35,7 @@ ZERON_URL = os.getenv(
     "ZERON_URL",
     "https://sysserver.praktis.bg:37005/ZeronServerService/DataExchange",
 )
-ZERON_DATABASE = os.getenv("ZERON_DB", "zdbMegadom2023")
+ZERON_DATABASE = os.getenv("ZERON_DB", "zdbMegadom")
 ZERON_USERCODE = os.getenv("ZERON_USERCODE", "1831")
 ZERON_USERPASS = os.getenv("ZERON_USERPASS", "angelbangel33")
 ZERON_STOREHOUSE = os.getenv("ZERON_STOREHOUSE", "1001")
@@ -202,7 +202,7 @@ def _build_zeron_payload(skus: List[str]) -> str:
     <UserCode>{ZERON_USERCODE}</UserCode>
     <UserPass>{ZERON_USERPASS}</UserPass>
     <Operation>
-      <OperName>ESLGetInvPriceGroupsPrices</OperName>
+      <OperName>GetPriceCheckerData</OperName>
       <Parameters>
         <InvList>
           {rows}
@@ -394,6 +394,7 @@ def upsert_products_from_erp(data: Dict[str, dict]) -> Dict[str, int]:
     updated = 0
 
     with get_session() as session:
+        # existing products
         existing = {
             p.sku: p
             for p in session.execute(
@@ -401,11 +402,17 @@ def upsert_products_from_erp(data: Dict[str, dict]) -> Dict[str, int]:
             ).scalars()
         }
 
+        # **new**: load valid group ids so we don't violate the FK
+        valid_group_ids = {
+            gid for (gid,) in session.execute(select(Group.id)).all()
+        }
+
         for sku, info in data.items():
             p = existing.get(sku)
             if p is None:
                 p = Product(sku=sku)
                 session.add(p)
+                existing[sku] = p
                 created += 1
             else:
                 updated += 1
@@ -424,10 +431,11 @@ def upsert_products_from_erp(data: Dict[str, dict]) -> Dict[str, int]:
             if "price" in info:
                 p.price_regular = info["price"]
 
-            # groupid is FK to groups; assumes IDs are already imported from ERP
+            # groupid is FK to groups; **only set if it exists in groups.id**
             groupid = info.get("groupid")
-            if groupid:
+            if groupid and groupid in valid_group_ids:
                 p.groupid = groupid
+            # else: leave p.groupid as-is to avoid FK violation
 
             p.updated_at = datetime.utcnow()
 
